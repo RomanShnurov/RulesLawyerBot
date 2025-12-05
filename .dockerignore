@@ -1,0 +1,58 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation
+docs/
+*.md
+!DOCKER_SETUP.md
+
+# Data directories (will be mounted as volumes)
+data/
+rules_pdfs/
+
+# Environment files
+.env
+.env.example
+
+# Logs
+*.log
+app.log
+
+# CI/CD
+.github/
+
+# Other
+plans/
+steps/
+.ruff_cache/
+.mypy_cache/

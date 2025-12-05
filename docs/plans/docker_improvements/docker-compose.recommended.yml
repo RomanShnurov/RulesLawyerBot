@@ -1,0 +1,83 @@
+version: '3.8'
+# Recommended production-ready docker-compose configuration
+# See docs/DOCKER_DEPLOYMENT_RECOMMENDATIONS.md for details
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: boardgame-bot
+
+    # Restart policy: restart unless manually stopped
+    restart: unless-stopped
+
+    # Signal handling for graceful shutdown
+    stop_signal: SIGTERM
+    stop_grace_period: 30s  # Allow 30 seconds for graceful shutdown
+
+    # Environment variables
+    environment:
+      # Required secrets (should use .env file)
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+      # Configuration with defaults
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.proxyapi.ru/openai/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-nano}
+
+      # Paths
+      - PDF_STORAGE_PATH=/app/rules_pdfs
+      - DATA_PATH=/app/data
+
+      # Logging and limits
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-10}
+      - MAX_CONCURRENT_SEARCHES=${MAX_CONCURRENT_SEARCHES:-4}
+
+    # Volume mounts with SELinux labels
+    volumes:
+      - ./rules_pdfs:/app/rules_pdfs:z  # z flag for SELinux
+      - ./data:/app/data:z
+
+    # Health check configuration
+    healthcheck:
+      # Use dedicated health check script
+      test: ["CMD", "python", "-m", "src.health", "readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s  # Initial startup grace period
+
+    # Resource limits and reservations
+    deploy:
+      resources:
+        limits:
+          # Hard limits - container will be killed if exceeded
+          cpus: '1.0'              # 1 CPU core
+          memory: 1G               # 1GB memory
+          memswap: 1G              # No swap (set equal to memory)
+
+        reservations:
+          # Soft reservations - what orchestrator reserves
+          cpus: '0.25'             # Reserve minimum 250m CPU
+          memory: 256M             # Reserve minimum 256MB memory
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"            # Rotate log when it reaches 50MB
+        max-file: "10"             # Keep 10 rotated log files
+        labels: "service=ruleslawyerbot,environment=production"
+        tag: "{{.Name}}/{{.ID}}"   # Include container info in logs
+
+    # Optional: network configuration (uncomment if needed)
+    # networks:
+    #   - bot-network
+
+# Optional: network definition
+# networks:
+#   bot-network:
+#     driver: bridge
