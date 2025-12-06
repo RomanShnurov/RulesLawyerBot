@@ -1,335 +1,221 @@
+"""Telegram bot entry point with async handlers."""
 import asyncio
-import logging
-import sys
-import time
-from pathlib import Path
+import platform
+import signal
+from datetime import datetime
 
-import pypdf
-from agents import (
-    Agent,
-    OpenAIChatCompletionsModel,
-    Runner,
-    SQLiteSession,
-    function_tool,
-    set_tracing_disabled,
-)
-from dotenv import load_dotenv
-from openai import AsyncOpenAI
+from agents import Runner
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
+from src.agent.definition import get_user_session, rules_agent
 from src.config import settings
-from src.utils.safety import BotError, rate_limiter, safe_execution, ugrep_semaphore
+from src.utils.logger import logger
+from src.utils.safety import rate_limiter, ugrep_semaphore
+from src.utils.telegram_helpers import send_long_message
 
-load_dotenv()
-
-# --- CONFIGURATION ---
-client = AsyncOpenAI(base_url=settings.openai_base_url, api_key=settings.openai_api_key)
-set_tracing_disabled(disabled=True)
-
-# Session database path
-session_db_path = Path(settings.data_path) / "sessions" / "conversation.db"
-session_db_path.parent.mkdir(parents=True, exist_ok=True)
-session = SQLiteSession(str(session_db_path))
-
-# --- LOGGING ---
-logger = logging.getLogger()
-log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
-logger.setLevel(log_level)
-
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-
-# --- Console Handler ---
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(log_level)
-console_handler.setFormatter(formatter)
-
-# --- File Handler ---
-log_file_path = Path(settings.data_path) / "app.log"
-log_file_path.parent.mkdir(parents=True, exist_ok=True)
-file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
-file_handler.setLevel(log_level)
-file_handler.setFormatter(formatter)
+# Track bot uptime
+bot_start_time = datetime.now()
 
 
-logger.addHandler(console_handler)
-logger.addHandler(file_handler)
+# ============================================
+# Command Handlers
+# ============================================
 
-logger.propagate = False
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /start command.
 
-logging.getLogger("httpcore").setLevel(logging.INFO)
-logging.getLogger("telegram").setLevel(logging.INFO)
-
-
-# --- PERFORMANCE TIMER ---
-class ScopeTimer:
-    def __init__(self, name="block"):
-        self.name = name
-
-    def __enter__(self):
-        self.start = time.perf_counter()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        elapsed = time.perf_counter() - self.start
-        logger.debug(f"{self.name}: {elapsed:.6f} sec")
-        # вернём False, чтобы исключения не подавлялись
-        return False
-
-
-# --- TOOL DEFINITIONS ---
-# The Agents SDK inspects type hints and docstrings to generate schemas.
-
-
-@function_tool
-@safe_execution
-async def search_filenames(query: str) -> str:
+    Args:
+        update: Telegram update object
+        context: Telegram context
     """
-    Find the PDF filename in local storage based on a game name.
+    user = update.effective_user
+    logger.info(f"User {user.id} ({user.username}) started bot")
+
+    welcome_message = f"""
+👋 Welcome, {user.first_name}!
+
+I'm your Board Game Rules Referee. Ask me anything about your board game rules!
+
+**How to use:**
+1. Ask a question about game rules (e.g., "How does movement work in Gloomhaven?")
+2. I'll search through PDF rulebooks and provide answers
+3. You can ask follow-up questions - I remember our conversation!
+
+**Commands:**
+- /start - Show this welcome message
+- /id - Get your Telegram user ID
+
+**Tips:**
+- Use game names in English (e.g., "Arkham Horror" not "Ужас Аркхэма")
+- For Russian text search, I'll use smart regex patterns
+- Rate limit: {settings.max_requests_per_minute} requests per minute
+
+Type your question to get started!
+""".strip()
+
+    await update.message.reply_text(welcome_message)
+
+
+async def get_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /id command - show user's Telegram ID.
+
+    Args:
+        update: Telegram update object
+        context: Telegram context
     """
+    user = update.effective_user
+    logger.info(f"User {user.id} ({user.username}) requested their ID")
 
-    with ScopeTimer("search_filenames"):
-        logger.debug(f"Search for filename: {query}")
-
-        if not query or len(query) < 2:
-            raise BotError(
-                user_message="❌ Search query too short. Please use at least 2 characters.",
-                log_details=f"Invalid query length: {len(query)}"
-            )
-
-        path = Path(settings.pdf_storage_path)
-        matches = [
-            f.name for f in path.glob("*.pdf") if query.lower() in f.name.lower()
-        ]
-
-        if not matches:
-            logger.debug(f"No files found matching '{query}'.")
-            raise BotError(
-                user_message=f"📂 No games found matching '{query}'. Please check the spelling.",
-                log_details=f"No PDFs found for query: {query}"
-            )
-
-        logger.debug("Found these files:\n" + "\n".join(matches[:5]))
-        return "Found these files:\n" + "\n".join(matches[:5])
+    await update.message.reply_text(
+        f"👤 Your Telegram User ID: `{user.id}`\n\n"
+        f"Name: {user.first_name} {user.last_name or ''}\n"
+        f"Username: @{user.username or 'N/A'}",
+        parse_mode="Markdown"
+    )
 
 
-@function_tool
-@safe_execution
-async def search_inside_file_ugrep(filename: str, keywords: str) -> str:
+async def health_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /health command for monitoring (admin only).
+
+    Args:
+        update: Telegram update object
+        context: Telegram context
     """
-    FAST SEARCH: Use this to find specific rules inside a PDF file.
-    """
+    user = update.effective_user
 
-    with ScopeTimer("search_inside_file_ugrep"):
-        file_path = Path(settings.pdf_storage_path) / filename
-
-        if not file_path.exists():
-            logger.debug(f"File '{filename}' not found in storage.")
-            raise FileNotFoundError(f"'{filename}'")
-
-        if not keywords or len(keywords) < 2:
-            raise BotError(
-                user_message="❌ Keywords too short. Please use at least 2 characters.",
-                log_details=f"Invalid keywords length: {len(keywords)}"
-            )
-
-        logger.debug(f"Search inside file with ugrep: {file_path}. Keywords: {keywords}")
-
-        # Use semaphore to limit concurrent ugrep processes
-        async with ugrep_semaphore:
-            cmd = [
-                "ugrep",
-                "-i",
-                "-n",
-                "-E",
-                "-Z",
-                "-H",
-                "--xml",
-                "--filter=pdf:pdftotext - -",
-                keywords,
-                str(file_path),
-            ]
-
-            logger.info(f"Running command: {' '.join(cmd)}")
-
-            try:
-                # Add timeout and run async
-                process = await asyncio.wait_for(
-                    asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    ),
-                    timeout=30.0
-                )
-
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=30.0
-                )
-
-                output = stdout.decode("utf-8", errors="ignore")
-
-                if process.returncode != 0 and not output:
-                    logger.debug(f"No matches found for '{keywords}' in {filename}.")
-                    return f"🔍 No matches found for '{keywords}' in {filename}."
-
-                logger.debug(f"Ugrep output length: {len(output)} chars")
-
-                if len(output) > 10000:
-                    return output[:10000] + "\n\n... [Truncated - results too long] ..."
-                return output
-
-            except FileNotFoundError:
-                raise BotError(
-                    user_message="🔧 Search tool not available. Using fallback method...",
-                    log_details="ugrep not installed on server"
-                )
-
-
-@function_tool
-@safe_execution
-async def read_full_document(filename: str) -> str:
-    """
-    Read the ENTIRE document. Use ONLY if ugrep fails.
-    """
-
-    with ScopeTimer("read_full_document"):
-        logger.debug("Read full document, because ugrep fails (or other reason).")
-
-        file_path = Path(settings.pdf_storage_path) / filename
-
-        if not file_path.exists():
-            logger.error(f"File '{filename}' not found.")
-            raise FileNotFoundError(f"'{filename}'")
-
-        # Check file size
-        file_size = file_path.stat().st_size
-        if file_size > 100_000_000:  # 100MB limit
-            raise BotError(
-                user_message="📄 File too large to process. Please contact administrator.",
-                log_details=f"File size {file_size} exceeds 100MB limit for {filename}"
-            )
-
-        text_content = []
-        with open(file_path, "rb") as f:
-            reader = pypdf.PdfReader(f)
-            total_pages = len(reader.pages)
-
-            for i, page in enumerate(reader.pages):
-                text = page.extract_text()
-                if text:
-                    text_content.append(f"--- Page {i + 1}/{total_pages} ---\n{text}")
-
-        full_text = "\n".join(text_content)
-        logger.debug(f"Extracted {len(full_text)} characters from {total_pages} pages")
-
-        if len(full_text) > 100000:
-            return full_text[:100000] + "\n\n... [Truncated - document too long] ..."
-        return full_text
-
-
-# --- AGENT CONFIGURATION ---
-
-rules_agent = Agent(
-    name="Board Game Referee",
-    instructions=(
-        "You are an expert board game rules referee with encyclopedic knowledge of game editions. "
-        "You can speak multiple languages (English, Russian, etc.).\n\n"
-        "YOUR GOAL: Find the correct PDF and answer the user's question.\n\n"
-        "CRITICAL SEARCH INSTRUCTIONS:\n"
-        "1. The PDF files in your storage are almost always named using the ORIGINAL ENGLISH TITLE.\n"
-        "2. If a user gives a localized name (e.g., Russian 'Схватка в стиле фэнтези'), "
-        "   you MUST use your internal knowledge to identify the original English name "
-        "   (which is 'Super Fantasy Brawl') BEFORE calling the search tool.\n"
-        "3. Always search for the English name first.\n\n"
-        "WORKFLOW:\n"
-        "1. Identify the game name and User's Language.\n"
-        "2. Convert localized game name -> English Filename Query.\n"
-        "3. Call 'search_filenames(query=EnglishName)'.\n"
-        "4. Call 'read_document'.\n"
-        "5. Answer the user IN THEIR OWN LANGUAGE based on the text you read."
-        "\nSEARCH INSTRUCTIONS FOR RUSSIAN LANGUAGE:\n"
-        "1. The user asks in Russian. The PDF text is in Russian.\n"
-        "2. Russian language has complex morphology (cases, endings). Searching for exact words often fails.\n"
-        "3. When using 'search_inside_file_ugrep', NEVER search for a single word like 'перемещение'.\n"
-        "4. ALWAYS construct a REGEX query that includes:\n"
-        "   - The root of the word (e.g., 'перемещ' for 'перемещение/перемещать').\n"
-        "   - Synonyms joined by OR operator '|'.\n"
-        "   - Example: If user asks about 'movement', search for: 'перемещ|движен|ход|бег'.\n"
-        "5. Be creative with synonyms relevant to board games."
-    ),
-    tools=[search_filenames, search_inside_file_ugrep, read_full_document],
-    model=OpenAIChatCompletionsModel(model=settings.openai_model, openai_client=client),
-)
-
-# --- TELEGRAM HANDLERS ---
-
-
-async def start_command(update: Update, context):
-    await update.message.reply_text("Ready! Ask me about rules.")
-
-
-async def handle_message(update: Update, context):
-    user_text = update.message.text
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
-    # 1. Check rate limit FIRST
-    allowed, message = await rate_limiter.check_rate_limit(user_id)
-    if not allowed:
-        logger.warning(f"Rate limit exceeded for user {user_id}")
-        await update.message.reply_text(f"⚠️ {message}")
+    # Check if user is admin
+    if not settings.admin_ids or user.id not in settings.admin_ids:
+        logger.warning(f"Unauthorized /health attempt by user {user.id} ({user.username})")
+        await update.message.reply_text(
+            "🚫 Unauthorized. This command is restricted to administrators."
+        )
         return
 
-    # 2. Send typing action to show the bot is working
-    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    uptime = (datetime.now() - bot_start_time).total_seconds()
+
+    await update.message.reply_text(
+        f"✅ Bot is healthy\n"
+        f"⏱️ Uptime: {uptime:.0f}s\n"
+        f"📊 Rate limit: {settings.max_requests_per_minute} req/min\n"
+        f"👤 Your User ID: {user.id}"
+    )
+
+
+# ============================================
+# Message Handler
+# ============================================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle all text messages using OpenAI Agent.
+
+    Args:
+        update: Telegram update object
+        context: Telegram context
+    """
+    user = update.effective_user
+    message_text = update.message.text
+
+    logger.info(f"User {user.id}: {message_text[:100]}")
+
+    # Check rate limit
+    allowed, rate_limit_msg = await rate_limiter.check_rate_limit(user.id)
+    if not allowed:
+        await update.message.reply_text(f"⏳ {rate_limit_msg}")
+        return
+
+    # Send typing indicator
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action="typing"
+    )
 
     try:
-        # 3. Run agent (tools have @safe_execution)
-        result = await Runner.run(rules_agent, user_text, session=session)
-        logger.debug(f"Agent final output: {result.final_output}")
-        if hasattr(result, "steps"):
-            logger.debug(f"Agent steps: {len(result.steps) if result.steps else 0}")
-            for i, step in enumerate(result.steps or []):
-                logger.debug(f"Step {i}: {type(step).__name__}")
+        # Get user-specific session
+        session = get_user_session(user.id)
 
-        # 4. Send response (truncate to Telegram's limit)
-        await update.message.reply_text(result.final_output[:3500])
+        # Run agent with semaphore to limit concurrent searches
+        async with ugrep_semaphore:
+            result = await Runner.run(
+                agent=rules_agent,
+                input=message_text,
+                session=session
+            )
+
+        # Log execution details
+        logger.debug(f"Agent steps: {len(result.steps)}")
+        for step in result.steps:
+            logger.debug(f"  Step: {step}")
+
+        # Send response (with message splitting)
+        response_text = result.final_output or "No response generated"
+        await send_long_message(
+            bot=context.bot,
+            chat_id=update.effective_chat.id,
+            text=response_text
+        )
 
     except Exception as e:
-        logger.error(f"Agent Error: {e}", exc_info=True)
+        logger.exception(f"Error handling message from user {user.id}")
         await update.message.reply_text(
-            "❌ Sorry, I encountered an internal error. Please try again or contact support."
+            "❌ An error occurred while processing your request. "
+            "Please try again or contact support."
         )
 
 
-# --- MAIN ---
+# ============================================
+# Application Lifecycle
+# ============================================
+
+async def shutdown(application: Application) -> None:
+    """Graceful shutdown handler.
+
+    Args:
+        application: Telegram application instance
+    """
+    logger.info("Shutting down gracefully...")
+    await application.stop()
+    await application.shutdown()
+    logger.info("Shutdown complete")
 
 
-def main():
+def main() -> None:
     """Main entry point for the bot."""
-    # Ensure required directories exist
-    Path(settings.pdf_storage_path).mkdir(parents=True, exist_ok=True)
-    Path(settings.data_path).mkdir(parents=True, exist_ok=True)
+    logger.info("Starting Board Game Rules Bot")
+    logger.info(f"OpenAI Model: {settings.openai_model}")
+    logger.info(f"PDF Storage: {settings.pdf_storage_path}")
 
-    logger.info("=" * 60)
-    logger.info("RulesLawyerBot starting...")
-    logger.info(f"Model: {settings.openai_model}")
-    logger.info(f"Rate limit: {settings.max_requests_per_minute} req/min per user")
-    logger.info(f"Max concurrent searches: {settings.max_concurrent_searches}")
-    logger.info(f"PDF storage: {settings.pdf_storage_path}")
-    logger.info("=" * 60)
-
-    application = ApplicationBuilder().token(settings.telegram_token).build()
-
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(
-        MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
+    # Build application
+    application = (
+        ApplicationBuilder()
+        .token(settings.telegram_token)
+        .build()
     )
 
-    logger.info("Bot is running and ready to receive messages...")
-    application.run_polling()
+    # Register handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("id", get_my_id))
+    application.add_handler(CommandHandler("health", health_check))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Register graceful shutdown handlers (platform-specific)
+    # Note: loop.add_signal_handler() is not supported on Windows
+    # In production (Docker/Linux), signal handlers work properly
+    # On Windows, python-telegram-bot handles shutdown automatically
+    if platform.system() != "Windows":
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(
+                sig,
+                lambda: asyncio.create_task(shutdown(application))
+            )
+        logger.info("Registered signal handlers for graceful shutdown")
+    else:
+        logger.info("Running on Windows - using default shutdown handling")
+
+    # Run bot in polling mode
+    logger.info("Bot started. Press Ctrl+C to stop.")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 """Application configuration using pydantic-settings."""
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +14,10 @@ class Settings(BaseSettings):
 
     # Telegram
     telegram_token: str = Field(..., description="Telegram bot token")
+    admin_user_ids: str = Field(
+        default="",
+        description="Comma-separated list of Telegram user IDs with admin access"
+    )
 
     # OpenAI
     openai_api_key: str = Field(..., description="OpenAI API key")
@@ -56,6 +60,16 @@ class Settings(BaseSettings):
     def session_db_dir(self) -> str:
         """Directory for per-user session databases."""
         return f"{self.data_path}/sessions"
+
+    @property
+    def admin_ids(self) -> list[int]:
+        """Parse comma-separated admin user IDs into a list of integers."""
+        if not self.admin_user_ids or not self.admin_user_ids.strip():
+            return []
+        try:
+            return [int(uid.strip()) for uid in self.admin_user_ids.split(",") if uid.strip()]
+        except ValueError:
+            return []
 
 
 # Global settings instance
