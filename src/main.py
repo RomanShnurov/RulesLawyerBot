@@ -1,6 +1,5 @@
+import asyncio
 import logging
-import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,31 +18,23 @@ from openai import AsyncOpenAI
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 
+from src.config import settings
+from src.utils.safety import BotError, rate_limiter, safe_execution, ugrep_semaphore
+
 load_dotenv()
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.proxyapi.ru/openai/v1")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-nano")
-
-PDF_STORAGE_PATH = os.getenv("PDF_STORAGE_PATH", "./rules_pdfs")
-DATA_PATH = os.getenv("DATA_PATH", "./data")
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-
-
-client = AsyncOpenAI(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
+client = AsyncOpenAI(base_url=settings.openai_base_url, api_key=settings.openai_api_key)
 set_tracing_disabled(disabled=True)
 
 # Session database path
-session_db_path = Path(DATA_PATH) / "sessions" / "conversation.db"
+session_db_path = Path(settings.data_path) / "sessions" / "conversation.db"
 session_db_path.parent.mkdir(parents=True, exist_ok=True)
 session = SQLiteSession(str(session_db_path))
 
 # --- LOGGING ---
 logger = logging.getLogger()
-log_level = getattr(logging, LOG_LEVEL.upper(), logging.INFO)
+log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
 logger.setLevel(log_level)
 
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -54,7 +45,7 @@ console_handler.setLevel(log_level)
 console_handler.setFormatter(formatter)
 
 # --- File Handler ---
-log_file_path = Path(DATA_PATH) / "app.log"
+log_file_path = Path(settings.data_path) / "app.log"
 log_file_path.parent.mkdir(parents=True, exist_ok=True)
 file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
 file_handler.setLevel(log_level)
@@ -91,44 +82,61 @@ class ScopeTimer:
 
 
 @function_tool
-def search_filenames(query: str) -> str:
+@safe_execution
+async def search_filenames(query: str) -> str:
     """
     Find the PDF filename in local storage based on a game name.
     """
 
     with ScopeTimer("search_filenames"):
         logger.debug(f"Search for filename: {query}")
-        try:
-            path = Path(PDF_STORAGE_PATH)
-            matches = [
-                f.name for f in path.glob("*.pdf") if query.lower() in f.name.lower()
-            ]
-            if not matches:
-                logger.debug(f"No files found matching '{query}'.")
-                return f"No files found matching '{query}'."
-            logger.debug("Found these files:\n" + "\n".join(matches[:5]))
-            return "Found these files:\n" + "\n".join(matches[:5])
-        except Exception as e:
-            return f"Error searching filenames: {str(e)}"
+
+        if not query or len(query) < 2:
+            raise BotError(
+                user_message="❌ Search query too short. Please use at least 2 characters.",
+                log_details=f"Invalid query length: {len(query)}"
+            )
+
+        path = Path(settings.pdf_storage_path)
+        matches = [
+            f.name for f in path.glob("*.pdf") if query.lower() in f.name.lower()
+        ]
+
+        if not matches:
+            logger.debug(f"No files found matching '{query}'.")
+            raise BotError(
+                user_message=f"📂 No games found matching '{query}'. Please check the spelling.",
+                log_details=f"No PDFs found for query: {query}"
+            )
+
+        logger.debug("Found these files:\n" + "\n".join(matches[:5]))
+        return "Found these files:\n" + "\n".join(matches[:5])
 
 
 @function_tool
-def search_inside_file_ugrep(filename: str, keywords: str) -> str:
+@safe_execution
+async def search_inside_file_ugrep(filename: str, keywords: str) -> str:
     """
     FAST SEARCH: Use this to find specific rules inside a PDF file.
     """
 
     with ScopeTimer("search_inside_file_ugrep"):
-        file_path = Path(PDF_STORAGE_PATH) / filename
+        file_path = Path(settings.pdf_storage_path) / filename
+
         if not file_path.exists():
-            logger.debug(f"Error: File '{filename}' not found in storage.")
-            return f"Error: File '{filename}' not found in storage."
+            logger.debug(f"File '{filename}' not found in storage.")
+            raise FileNotFoundError(f"'{filename}'")
 
-        logger.debug(
-            f"Search inside file with ugrep: {file_path}. Keywords: {keywords}"
-        )
+        if not keywords or len(keywords) < 2:
+            raise BotError(
+                user_message="❌ Keywords too short. Please use at least 2 characters.",
+                log_details=f"Invalid keywords length: {len(keywords)}"
+            )
 
-        try:
+        logger.debug(f"Search inside file with ugrep: {file_path}. Keywords: {keywords}")
+
+        # Use semaphore to limit concurrent ugrep processes
+        async with ugrep_semaphore:
             cmd = [
                 "ugrep",
                 "-i",
@@ -143,53 +151,82 @@ def search_inside_file_ugrep(filename: str, keywords: str) -> str:
             ]
 
             logger.info(f"Running command: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True)
 
-            if result.returncode != 0 and not result.stdout:
-                logger.debug(f"No matches found for '{keywords}' in {filename}.")
-                return f"No matches found for '{keywords}' in {filename}."
+            try:
+                # Add timeout and run async
+                process = await asyncio.wait_for(
+                    asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    ),
+                    timeout=30.0
+                )
 
-            output = result.stdout
-            logger.debug(f"Ugrep output: {output}")
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=30.0
+                )
 
-            if len(output) > 10000:
-                return output[:10000] + "\n... [Truncated results] ..."
-            return output
+                output = stdout.decode("utf-8", errors="ignore")
 
-        except FileNotFoundError:
-            logger.error("Error: 'ugrep' is not installed on the server.")
-            return "Error: 'ugrep' is not installed on the server."
-        except Exception as e:
-            logger.error(f"Error running ugrep: {str(e)}")
-            return f"Error running ugrep: {str(e)}"
+                if process.returncode != 0 and not output:
+                    logger.debug(f"No matches found for '{keywords}' in {filename}.")
+                    return f"🔍 No matches found for '{keywords}' in {filename}."
+
+                logger.debug(f"Ugrep output length: {len(output)} chars")
+
+                if len(output) > 10000:
+                    return output[:10000] + "\n\n... [Truncated - results too long] ..."
+                return output
+
+            except FileNotFoundError:
+                raise BotError(
+                    user_message="🔧 Search tool not available. Using fallback method...",
+                    log_details="ugrep not installed on server"
+                )
 
 
 @function_tool
-def read_full_document(filename: str) -> str:
+@safe_execution
+async def read_full_document(filename: str) -> str:
     """
     Read the ENTIRE document. Use ONLY if ugrep fails.
     """
 
     with ScopeTimer("read_full_document"):
-        logger.debug("Read full document, because ugrep fails(or other reason).")
+        logger.debug("Read full document, because ugrep fails (or other reason).")
 
-        file_path = Path(PDF_STORAGE_PATH) / filename
+        file_path = Path(settings.pdf_storage_path) / filename
+
         if not file_path.exists():
-            logger.error(f"Error: File '{filename}' not found.")
-            return f"Error: File '{filename}' not found."
+            logger.error(f"File '{filename}' not found.")
+            raise FileNotFoundError(f"'{filename}'")
 
-        try:
-            text_content = []
-            with open(file_path, "rb") as f:
-                reader = pypdf.PdfReader(f)
-                for i, page in enumerate(reader.pages):
-                    text = page.extract_text()
-                    if text:
-                        text_content.append(f"--- Page {i + 1} ---\n{text}")
-            return "\n".join(text_content)[:100000]
-        except Exception as e:
-            logger.error(f"Error reading PDF: {str(e)}")
-            return f"Error reading PDF: {str(e)}"
+        # Check file size
+        file_size = file_path.stat().st_size
+        if file_size > 100_000_000:  # 100MB limit
+            raise BotError(
+                user_message="📄 File too large to process. Please contact administrator.",
+                log_details=f"File size {file_size} exceeds 100MB limit for {filename}"
+            )
+
+        text_content = []
+        with open(file_path, "rb") as f:
+            reader = pypdf.PdfReader(f)
+            total_pages = len(reader.pages)
+
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text()
+                if text:
+                    text_content.append(f"--- Page {i + 1}/{total_pages} ---\n{text}")
+
+        full_text = "\n".join(text_content)
+        logger.debug(f"Extracted {len(full_text)} characters from {total_pages} pages")
+
+        if len(full_text) > 100000:
+            return full_text[:100000] + "\n\n... [Truncated - document too long] ..."
+        return full_text
 
 
 # --- AGENT CONFIGURATION ---
@@ -222,8 +259,8 @@ rules_agent = Agent(
         "   - Example: If user asks about 'movement', search for: 'перемещ|движен|ход|бег'.\n"
         "5. Be creative with synonyms relevant to board games."
     ),
-    tools=[search_filenames, search_inside_file_ugrep],
-    model=OpenAIChatCompletionsModel(model=OPENAI_MODEL, openai_client=client),
+    tools=[search_filenames, search_inside_file_ugrep, read_full_document],
+    model=OpenAIChatCompletionsModel(model=settings.openai_model, openai_client=client),
 )
 
 # --- TELEGRAM HANDLERS ---
@@ -236,11 +273,20 @@ async def start_command(update: Update, context):
 async def handle_message(update: Update, context):
     user_text = update.message.text
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
 
-    # Send typing action to show the bot is working
+    # 1. Check rate limit FIRST
+    allowed, message = await rate_limiter.check_rate_limit(user_id)
+    if not allowed:
+        logger.warning(f"Rate limit exceeded for user {user_id}")
+        await update.message.reply_text(f"⚠️ {message}")
+        return
+
+    # 2. Send typing action to show the bot is working
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
+        # 3. Run agent (tools have @safe_execution)
         result = await Runner.run(rules_agent, user_text, session=session)
         logger.debug(f"Agent final output: {result.final_output}")
         if hasattr(result, "steps"):
@@ -248,11 +294,14 @@ async def handle_message(update: Update, context):
             for i, step in enumerate(result.steps or []):
                 logger.debug(f"Step {i}: {type(step).__name__}")
 
+        # 4. Send response (truncate to Telegram's limit)
         await update.message.reply_text(result.final_output[:3500])
 
     except Exception as e:
         logger.error(f"Agent Error: {e}", exc_info=True)
-        await update.message.reply_text("Sorry, I encountered an internal error.")
+        await update.message.reply_text(
+            "❌ Sorry, I encountered an internal error. Please try again or contact support."
+        )
 
 
 # --- MAIN ---
@@ -261,25 +310,25 @@ async def handle_message(update: Update, context):
 def main():
     """Main entry point for the bot."""
     # Ensure required directories exist
-    Path(PDF_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
-    Path(DATA_PATH).mkdir(parents=True, exist_ok=True)
+    Path(settings.pdf_storage_path).mkdir(parents=True, exist_ok=True)
+    Path(settings.data_path).mkdir(parents=True, exist_ok=True)
 
-    if not TELEGRAM_TOKEN:
-        logger.error("TELEGRAM_TOKEN environment variable is not set!")
-        sys.exit(1)
+    logger.info("=" * 60)
+    logger.info("RulesLawyerBot starting...")
+    logger.info(f"Model: {settings.openai_model}")
+    logger.info(f"Rate limit: {settings.max_requests_per_minute} req/min per user")
+    logger.info(f"Max concurrent searches: {settings.max_concurrent_searches}")
+    logger.info(f"PDF storage: {settings.pdf_storage_path}")
+    logger.info("=" * 60)
 
-    if not OPENAI_API_KEY:
-        logger.error("OPENAI_API_KEY environment variable is not set!")
-        sys.exit(1)
-
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application = ApplicationBuilder().token(settings.telegram_token).build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(
         MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
     )
 
-    logger.info("Bot is running...")
+    logger.info("Bot is running and ready to receive messages...")
     application.run_polling()
 
 

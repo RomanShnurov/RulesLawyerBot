@@ -90,7 +90,7 @@ validate:
 
 # Run bot locally (without Docker)
 run-local:
-    python -m src.main
+    uv run python -m src.main
 
 # Setup project from scratch
 setup:
