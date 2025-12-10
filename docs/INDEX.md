@@ -32,8 +32,8 @@
 - [**plans/next_steps.md**](plans/next_steps.md) - External planning resources and references
 
 ### Architecture & Analysis
+- [**SGR_ARCHITECTURE.md**](SGR_ARCHITECTURE.md) - **Schema-Guided Reasoning implementation guide** (transparent agent reasoning)
 - [**other/architecture_review_and_recommendations.md**](other/architecture_review_and_recommendations.md) - Architecture analysis and improvement recommendations
-- [**other/fastapi_architecture_analysis.md**](other/fastapi_architecture_analysis.md) - FastAPI integration analysis (if applicable)
 - [**other/plan_review.md**](other/plan_review.md) - Review of implementation plans
 - [**other/implementation_plan_with_existed_code.md**](other/implementation_plan_with_existed_code.md) - Implementation strategy based on existing codebase
 
@@ -72,12 +72,14 @@ RulesLawyerBot/
 
 ## Key Features
 
+- **Schema-Guided Reasoning (SGR)**: Transparent, auditable agent reasoning with structured Pydantic outputs
 - **Intelligent Rules Search**: Uses OpenAI Agents SDK to understand and answer complex rules questions
 - **Fast PDF Search**: Leverages `ugrep` with `pdftotext` for efficient text extraction and search
 - **Multilingual Support**: Handles queries in English, Russian, and other languages
 - **Smart Filename Translation**: Automatically translates localized game names to English filenames
 - **Persistent Conversations**: Maintains conversation history with SQLite sessions
 - **Morphology-Aware Search**: Special regex patterns for Russian language word roots and synonyms
+- **Debug Mode**: Users can enable `/debug` to see the full reasoning chain
 
 ---
 

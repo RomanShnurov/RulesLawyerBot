@@ -110,3 +110,151 @@ async def test_read_full_document(mock_settings, sample_pdf):
     result = await _read_full_document_impl("test.pdf")
 
     assert "Page 1" in result
+
+
+# Internal implementation of list_directory_tree for testing
+async def _list_directory_tree_impl(path: str = "", max_depth: int = 3) -> str:
+    """Internal implementation of list_directory_tree for testing."""
+    def _sync_tree(path: str, max_depth: int) -> str:
+        with ScopeTimer(f"list_directory_tree('{path}', max_depth={max_depth})"):
+            try:
+                base_path = Path(settings.pdf_storage_path)
+                target_path = base_path / path if path else base_path
+
+                if not target_path.exists():
+                    return f"Error: Path '{path}' not found"
+
+                if not target_path.is_dir():
+                    return f"Error: '{path}' is not a directory"
+
+                lines = [f"{target_path.name}/"]
+                _build_tree_for_test(target_path, lines, "", max_depth, 0)
+
+                output = "\n".join(lines)
+
+                if len(output) > 10000:
+                    output = output[:10000] + "\n...(truncated)"
+
+                return output
+
+            except Exception as e:
+                return f"Error listing directory: {str(e)}"
+
+    return await asyncio.to_thread(_sync_tree, path, max_depth)
+
+
+def _build_tree_for_test(
+    directory: Path,
+    lines: list,
+    prefix: str,
+    max_depth: int,
+    current_depth: int
+) -> None:
+    """Build tree structure helper for testing."""
+    if current_depth >= max_depth:
+        return
+
+    items = []
+    try:
+        for item in sorted(directory.iterdir()):
+            if item.is_dir():
+                items.append((item, True))
+            elif item.suffix.lower() == ".pdf":
+                items.append((item, False))
+    except PermissionError:
+        lines.append(f"{prefix}[Permission denied]")
+        return
+
+    for i, (item, is_dir) in enumerate(items):
+        is_last = i == len(items) - 1
+        connector = "└── " if is_last else "├── "
+
+        if is_dir:
+            lines.append(f"{prefix}{connector}{item.name}/")
+            extension = "    " if is_last else "│   "
+            _build_tree_for_test(item, lines, prefix + extension, max_depth, current_depth + 1)
+        else:
+            lines.append(f"{prefix}{connector}{item.name}")
+
+
+@pytest.mark.asyncio
+async def test_list_directory_tree_empty(mock_settings):
+    """Test tree on empty directory."""
+    result = await _list_directory_tree_impl()
+
+    # Should show root dir name
+    assert "pdfs/" in result
+
+
+@pytest.mark.asyncio
+async def test_list_directory_tree_with_pdfs(mock_settings):
+    """Test tree with PDF files."""
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+    (pdf_dir / "Gloomhaven.pdf").touch()
+    (pdf_dir / "Arkham Horror.pdf").touch()
+
+    result = await _list_directory_tree_impl()
+
+    assert "Gloomhaven.pdf" in result
+    assert "Arkham Horror.pdf" in result
+
+
+@pytest.mark.asyncio
+async def test_list_directory_tree_nested(mock_settings):
+    """Test tree with nested directories."""
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+
+    # Create nested structure
+    (pdf_dir / "Fantasy").mkdir()
+    (pdf_dir / "Fantasy" / "Gloomhaven.pdf").touch()
+    (pdf_dir / "Horror").mkdir()
+    (pdf_dir / "Horror" / "Arkham.pdf").touch()
+
+    result = await _list_directory_tree_impl()
+
+    assert "Fantasy/" in result
+    assert "Gloomhaven.pdf" in result
+    assert "Horror/" in result
+    assert "Arkham.pdf" in result
+
+
+@pytest.mark.asyncio
+async def test_list_directory_tree_max_depth(mock_settings):
+    """Test tree respects max_depth limit."""
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+
+    # Create deep structure
+    (pdf_dir / "level1" / "level2" / "level3").mkdir(parents=True)
+    (pdf_dir / "level1" / "level2" / "level3" / "deep.pdf").touch()
+
+    # With depth 2, should not show level3
+    result = await _list_directory_tree_impl(max_depth=2)
+
+    assert "level1/" in result
+    assert "level2/" in result
+    # level3 should not appear (depth limit)
+    assert "level3" not in result
+
+
+@pytest.mark.asyncio
+async def test_list_directory_tree_nonexistent_path(mock_settings):
+    """Test tree with nonexistent path."""
+    result = await _list_directory_tree_impl("nonexistent")
+
+    assert "Error" in result
+    assert "not found" in result
+
+
+@pytest.mark.asyncio
+async def test_list_directory_tree_ignores_non_pdf(mock_settings):
+    """Test tree ignores non-PDF files."""
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+    (pdf_dir / "game.pdf").touch()
+    (pdf_dir / "readme.txt").touch()
+    (pdf_dir / "image.png").touch()
+
+    result = await _list_directory_tree_impl()
+
+    assert "game.pdf" in result
+    assert "readme.txt" not in result
+    assert "image.png" not in result
