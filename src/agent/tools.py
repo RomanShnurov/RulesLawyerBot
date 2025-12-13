@@ -79,15 +79,29 @@ def search_filenames(query: str) -> str:
 
 @function_tool
 @async_tool
-def search_inside_file_ugrep(filename: str, keywords: str) -> str:
-    """Search inside a PDF file using ugrep for fast regex matching.
+def search_inside_file_ugrep(
+    filename: str, keywords: str, fuzzy: bool = False
+) -> str:
+    """Search inside a PDF file using ugrep with Boolean pattern support.
 
     Args:
         filename: Name of the PDF file (must exist in rules_pdfs/)
-        keywords: Search keywords or regex pattern
+        keywords: Search keywords with Boolean logic support:
+                  - Space-separated terms use AND: "attack armor" finds both
+                  - Pipe | means OR: "move|teleport" finds either
+                  - Dash - means NOT: "attack -ranged" excludes ranged
+                  - Combine: "attack|strike armor -magic"
+                  - Quotes for exact phrases: '"end of turn"'
+        fuzzy: Enable fuzzy matching to handle typos (default: False)
 
     Returns:
-        Matching text snippets or error message
+        Matching text snippets with context or error message
+
+    Examples:
+        search_inside_file_ugrep("game.pdf", "combat damage")
+        search_inside_file_ugrep("game.pdf", "move|teleport enemy")
+        search_inside_file_ugrep("game.pdf", "attack -ranged")
+        search_inside_file_ugrep("game.pdf", "movment", fuzzy=True)
     """
     with ScopeTimer(f"search_inside_file_ugrep('{filename}', '{keywords}')"):
         try:
@@ -95,20 +109,29 @@ def search_inside_file_ugrep(filename: str, keywords: str) -> str:
             if not pdf_path.exists():
                 return f"Error: File '{filename}' not found"
 
-            # Run ugrep with PDF filter
+            # Build ugrep command
+            # -%: Boolean patterns (space=AND, |=OR, -=NOT)
             # -i: case insensitive
-            # --filter: convert PDF to text on-the-fly
-            # -C 2: show 2 lines of context
+            # -C5: 5 lines context (enough for rule understanding)
+            # --filter: convert PDF to text on-the-fly (% = file path)
+            cmd = [
+                "ugrep",
+                "-%",  # Boolean query mode
+                "-i",  # Case insensitive
+                "-C20",  # 20 lines of context
+                "--filter=pdf:pdftotext % -",  # PDF text extraction
+                keywords,
+                str(pdf_path),
+            ]
+
+            # Add fuzzy matching for typo tolerance
+            if fuzzy:
+                cmd.insert(2, "-Z")  # Insert after -%
+
+            logger.debug("Searching with ugrep command: " + " ".join(cmd))
+
             result = subprocess.run(
-                [
-                    "ugrep",
-                    "-i",  # Case insensitive
-                    "--filter=pdf:pdftotext - -",  # PDF text extraction
-                    "-C",
-                    "2",  # 2 lines of context
-                    keywords,
-                    str(pdf_path),
-                ],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=30,  # Prevent hanging
@@ -117,11 +140,13 @@ def search_inside_file_ugrep(filename: str, keywords: str) -> str:
             if result.returncode == 0:
                 output = result.stdout.strip()
                 # Truncate to avoid token overflow
-                if len(output) > 10000:
-                    output = output[:10000] + "\n...(truncated)"
+                logger.debug(f"ugrep output: {output}")
+                if len(output) > 30000:
+                    output = output[:30000] + "\n...(truncated)"
                 return output if output else "No matches found"
 
             elif result.returncode == 1:
+                logger.debug(f"No matches found for '{keywords}'")
                 return "No matches found"
 
             else:

@@ -88,7 +88,13 @@ Plan your search strategy AFTER seeing list_directory_tree results:
 - `search_strategy`: "exact_match" | "regex_morphology" | "broad_scan"
 - `reasoning`: Why this strategy
 
-For Russian morphology, use word roots:
+**IMPORTANT: Plan broad searches to avoid read_full_document**
+- For procedural questions, search for section headers first:
+  - "Hero Movement|Движение героев" → captures whole section
+  - "Combat Phase|Фаза боя" → gets complete procedure
+- Then use specific terms if needed
+
+For Russian morphology, use word roots with OR (|):
 - movement → `перемещ|движен|ход|передвиж`
 - attack → `атак|удар|бой|сраж`
 - action → `действ|актив|ход`
@@ -106,13 +112,15 @@ Analyze ACTUAL tool results (not predictions):
 
 ### Step 4: Follow-up Searches (fills `follow_up_searches` field)
 If `completeness_score` < 0.8 or `referenced_concepts` contains unexplained terms:
-- Do up to 3 follow-up searches
+- Do up to 3 follow-up searches **using search_inside_file_ugrep**
 - Each search records: `concept`, `why_needed`, `search_terms`, `found_info`, `contributed_to_answer`
+- **PREFER iterative ugrep searches over read_full_document**
 
 Examples when follow-up is needed:
-- Found "Spend 2 AP" → search for Action Points
-- Found "requires LOS" → search for Line of Sight
-- Found "during activation" → search for phase structure
+- Found "Spend 2 AP" → `search_inside_file_ugrep("game.pdf", "Action Points|ОД|очки действ")`
+- Found "requires LOS" → `search_inside_file_ugrep("game.pdf", "Line of Sight|линия видимости")`
+- Found "during activation" → `search_inside_file_ugrep("game.pdf", "activation phase|фаза активации")`
+- Found incomplete procedure → `search_inside_file_ugrep("game.pdf", "Section Name|broader keywords")`
 
 ### Step 5: Final Answer (fills remaining fields)
 Synthesize everything:
@@ -127,8 +135,41 @@ Synthesize everything:
 
 1. `list_directory_tree(path, max_depth)` - View rules library structure FIRST
 2. `search_filenames(query)` - Find PDF by game name (use English titles)
-3. `search_inside_file_ugrep(filename, keywords)` - Fast regex search in PDF
-4. `read_full_document(filename)` - Read entire PDF (fallback)
+3. `search_inside_file_ugrep(filename, keywords, fuzzy=False)` - Fast search in PDF
+
+   **Boolean query syntax (very powerful!):**
+   - Space = AND: `"attack armor"` finds sections with BOTH terms
+   - Pipe = OR: `"move|teleport"` finds EITHER term
+   - Dash = NOT: `"attack -ranged"` finds attack but NOT ranged
+   - Combine: `"attack|strike damage -magic"` = (attack OR strike) AND damage AND NOT magic
+   - Quotes for exact phrases: `'"end of turn"'`
+
+   **Fuzzy search for typos:** Set `fuzzy=True` to match misspellings
+
+   **Examples:**
+   - `search_inside_file_ugrep("game.pdf", "combat damage")` - AND search
+   - `search_inside_file_ugrep("game.pdf", "move|teleport enemy")` - OR + AND
+   - `search_inside_file_ugrep("game.pdf", "movment", fuzzy=True)` - typo tolerance
+
+4. `read_full_document(filename)` - Read entire PDF (LAST RESORT ONLY)
+
+   ⚠️ **CRITICAL: Use read_full_document ONLY if ALL of these conditions are met:**
+
+   1. You have already tried 2+ ugrep searches with different keywords
+   2. AND at least one of these is true:
+      - ugrep returned "No matches found" for all searches
+      - completeness_score < 0.5 after analyzing ugrep results
+      - User explicitly asks for "complete/full/all rules" description
+
+   **Why avoid read_full_document:**
+   - Consumes 3x more tokens than ugrep (100k vs 30k chars)
+   - Slower processing time
+   - Higher API costs
+
+   **Prefer instead:** Iterative ugrep searches with broader keywords
+   - Use section headers: `"Hero Movement|Movement Phase"`
+   - Use broader OR patterns: `"move|relocate|teleport|reposition"`
+   - Increase search breadth before switching to full document read
 
 ## EXAMPLE WORKFLOW
 
@@ -141,7 +182,7 @@ Output: Shows "Super Fantasy Brawl.pdf" exists in the library
 Output: "Found 1 file(s): Super Fantasy Brawl.pdf"
 
 **STEP 3: Call search_inside_file_ugrep("Super Fantasy Brawl.pdf", "атак|удар|бой")**
-Output: Returns excerpts with attack rules
+Output: Returns excerpts with attack rules (using OR to match any attack-related term)
 
 **STEP 4: NOW output ReasonedAnswer with ACTUAL tool results:**
 
@@ -161,7 +202,7 @@ Output: Returns excerpts with attack rules
     "target_file": "Super Fantasy Brawl.pdf",
     "search_terms": ["атак|удар|бой|сраж"],
     "search_strategy": "regex_morphology",
-    "reasoning": "Russian text requires morphological roots to catch all word forms"
+    "reasoning": "Using Boolean OR (|) to match any attack-related Russian word forms"
   },
   "primary_search_result": {
     "search_term": "атак|удар|бой",
@@ -177,7 +218,7 @@ Output: Returns excerpts with attack rules
     {
       "concept": "Action Points (ОД)",
       "why_needed": "Attack cost mentioned but not explained",
-      "search_terms": ["очк.*действ|ОД"],
+      "search_terms": ["очки|ОД действ"],
       "found_info": "Each champion has 3 AP per activation",
       "contributed_to_answer": true
     }

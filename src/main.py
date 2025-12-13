@@ -352,7 +352,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     # Pretty-print JSON if it's parseable
                     try:
                         parsed = json.loads(text_content)
-                        logger.debug(f"  Step {i}: {step.type}")
+                        logger.debug(f"  Step {i}: {step.type}: {step.raw_item.model_dump_json(indent=2, ensure_ascii=False)}")
                         logger.debug(f"    Output (formatted):\n{json.dumps(parsed, indent=2, ensure_ascii=False)}")
                     except (json.JSONDecodeError, AttributeError):
                         # Not JSON, log first 200 chars
