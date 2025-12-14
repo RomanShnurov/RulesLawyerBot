@@ -27,6 +27,7 @@ from src.agent.schemas import ActionType, PipelineOutput, ReasonedAnswer
 from src.utils.conversation_state import ConversationStage, ConversationState
 from src.config import settings
 from src.utils.logger import logger
+from src.utils.progress_reporter import ProgressReporter
 from src.utils.safety import rate_limiter, ugrep_semaphore
 from src.utils.telegram_helpers import send_long_message
 
@@ -54,22 +55,16 @@ def format_reasoned_answer(answer: ReasonedAnswer, verbose: bool = False) -> str
     """
     parts = []
 
-    # Main answer (always shown)
+    # Main answer (always shown) - now includes direct quotes and sources
     parts.append(answer.answer)
 
-    # Sources (if available)
-    if answer.sources:
-        sources_text = ", ".join(f"{s.file} ({s.location})" for s in answer.sources)
-        parts.append(f"\n📖 *Источники:* {sources_text}")
-
-    # Confidence indicator
-    if answer.confidence >= 0.8:
-        conf_emoji = "✅"
-    elif answer.confidence >= 0.5:
-        conf_emoji = "⚠️"
-    else:
-        conf_emoji = "❓"
-    parts.append(f"\n{conf_emoji} Уверенность: {answer.confidence:.0%}")
+    # Confidence indicator (only if not high confidence)
+    if answer.confidence < 0.8:
+        if answer.confidence >= 0.5:
+            conf_emoji = "⚠️"
+        else:
+            conf_emoji = "❓"
+        parts.append(f"\n{conf_emoji} Уверенность: {answer.confidence:.0%}")
 
     # Limitations (if any)
     if answer.limitations:
@@ -78,7 +73,7 @@ def format_reasoned_answer(answer: ReasonedAnswer, verbose: bool = False) -> str
 
     # Suggestions for follow-up questions
     if answer.suggestions:
-        suggestions_text = ", ".join(answer.suggestions[:3])  # Max 3
+        suggestions_text = " • ".join(answer.suggestions[:3])  # Max 3
         parts.append(f"\n💡 *См. также:* {suggestions_text}")
 
     # Verbose mode: show full reasoning chain
@@ -569,15 +564,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_id=update.effective_chat.id, action="typing"
     )
 
+    # Create progress reporter for streaming updates
+    progress = ProgressReporter(context.bot, update.effective_chat.id)
+
     try:
         # Get user-specific session
+        logger.debug(f"[Perf] Getting session for user {user.id}")
         session = get_user_session(user.id)
+        logger.debug(f"[Perf] Session loaded, starting agent run")
 
-        # Run agent with semaphore to limit concurrent searches
+        # Run agent with streaming to show progress
         async with ugrep_semaphore:
-            result = await Runner.run(
+            logger.debug(f"[Perf] Acquired ugrep semaphore, calling Runner.run_streamed")
+            result = Runner.run_streamed(
                 starting_agent=rules_agent, input=agent_input, session=session
             )
+            logger.debug(f"[Perf] Runner.run_streamed returned, waiting for first event")
+
+            # Process streaming events
+            event_count = 0
+            async for event in result.stream_events():
+                event_count += 1
+                if event_count == 1:
+                    logger.debug(f"[Perf] First event received: {event.type}")
+
+                if event.type == "run_item_stream_event":
+                    item = event.item
+                    if item.type == "tool_call_item":
+                        # Extract tool name and arguments
+                        tool_name = getattr(item, "name", None)
+                        if tool_name is None and hasattr(item, "raw_item"):
+                            tool_name = getattr(item.raw_item, "name", "unknown")
+
+                        # Extract arguments if available
+                        args = None
+                        if hasattr(item, "raw_item") and hasattr(item.raw_item, "arguments"):
+                            try:
+                                args = json.loads(item.raw_item.arguments)
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+
+                        logger.debug(f"[Perf] Tool call event received: {tool_name}")
+                        await progress.report_tool_call(tool_name, args)
+                        logger.debug(f"Tool called: {tool_name}")
+
+        # Force final update before response
+        await progress.force_update()
 
         # Log execution details
         logger.debug(f"Agent steps: {len(result.new_items)}")
@@ -619,6 +651,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Handle multi-stage pipeline output
         if isinstance(result.final_output, PipelineOutput):
+            # Delete progress message before sending response
+            await progress.finalize()
             await handle_pipeline_output(
                 result.final_output, update, context, user.id
             )
@@ -634,6 +668,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 verbose=is_admin or debug_enabled,
             )
 
+            # Delete progress message before sending response
+            await progress.finalize()
             await send_long_message(
                 bot=context.bot, chat_id=update.effective_chat.id, text=response_text
             )
@@ -647,11 +683,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.warning(
                 f"Non-structured output received: {type(result.final_output)}"
             )
+            # Delete progress message before sending response
+            await progress.finalize()
             await send_long_message(
                 bot=context.bot, chat_id=update.effective_chat.id, text=response_text
             )
 
     except Exception:
+        # Clean up progress message on error
+        await progress.finalize()
         logger.exception(f"Error handling message from user {user.id}")
         await update.message.reply_text(
             "❌ An error occurred while processing your request. "

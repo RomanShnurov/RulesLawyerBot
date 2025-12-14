@@ -104,8 +104,23 @@ With game and file identified:
 When you have sufficient information:
 1. Set action_type="final_answer"
 2. Populate final_answer with complete ReasonedAnswer schema
-3. Answer in the user's language
-4. Include sources and confidence
+3. **CRITICAL: Format answer to prioritize direct quotes from rules:**
+   - Start with direct quote(s) from the rulebook
+   - Include section name and page number
+   - End with optional detailed explanation if needed
+4. Answer in the user's language
+5. Include sources and confidence
+
+**Answer Format Template:**
+```
+📖 [Direct quote from rules in quotation marks]
+
+📍 Section: [section name], Page [number]
+
+💡 In short: [brief explanation if quote needs clarification]
+
+[Optional: more detailed explanation only if user might need it]
+```
 
 ## TOOLS
 
@@ -201,12 +216,12 @@ available games, then populate `options` with the game names found!
       "reasoning": "Found complete attack rules"
     },
     "follow_up_searches": [],
-    "answer": "Чтобы атаковать в Super Fantasy Brawl:\\n1. Потратьте 2 ОД\\n2. Выберите цель...",
+    "answer": "📖 \"Атака: потратьте 2 ОД (Очка Действия), выберите одного вражеского чемпиона в радиусе атаки и объявите атаку. Защищающийся игрок может объявить защиту, потратив 1 ОД. Разыграйте карты атаки и защиты, затем разрешите эффекты.\"\n\n📍 Раздел: Боевая система, стр. 12\n\n💡 Кратко: Для атаки нужно 2 ОД и цель в радиусе. Противник может защищаться за 1 ОД.",
     "answer_language": "ru",
-    "sources": [{"file": "Super Fantasy Brawl.pdf", "location": "стр. 12", "excerpt": "Атака: потратьте 2 ОД..."}],
+    "sources": [{"file": "Super Fantasy Brawl.pdf", "location": "стр. 12, раздел 'Боевая система'", "excerpt": "Атака: потратьте 2 ОД, выберите цель..."}],
     "confidence": 0.85,
     "limitations": [],
-    "suggestions": ["Как работает защита?"]
+    "suggestions": ["Как работает защита?", "Что такое радиус атаки?"]
   },
   "stage_reasoning": "Game from context, found complete answer in rules"
 }
@@ -219,6 +234,14 @@ available games, then populate `options` with the game names found!
 3. For game_selection, provide at most 5 candidates
 4. Match answer language to question language
 5. Populate game_identification when game is known (even from context)
+6. **ANSWER FORMAT - CRITICAL:**
+   - Players need DIRECT QUOTES from rules, not paraphrases
+   - Start answer with quoted text from `relevant_excerpts`
+   - Always include section name and page number from `page_references`
+   - Add brief explanation ONLY if quote needs clarification
+   - Detailed explanation is optional - offer it at the end with "Нужно более подробное объяснение?"
+   - Use `relevant_excerpts` from SearchResultAnalysis as the main content
+   - Quote must be in quotation marks ("")
 """.strip()
 
     agent = Agent(
@@ -257,12 +280,15 @@ def get_user_session(user_id: int) -> SQLiteSession:
     session_id = f"conversation_{user_id}"
     db_path = session_dir / f"{user_id}.db"
 
-    logger.debug(f"Loading session for user {user_id}: {db_path}")
+    logger.debug(f"[Perf] Creating session for user {user_id}: {db_path}")
 
-    return SQLiteSession(
+    session = SQLiteSession(
         session_id=session_id,
         db_path=str(db_path)
     )
+
+    logger.debug(f"[Perf] Session object created for user {user_id}")
+    return session
 
 
 # Global agent instance

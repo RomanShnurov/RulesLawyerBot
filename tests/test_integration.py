@@ -15,6 +15,22 @@ from src.agent.schemas import (
 )
 
 
+def create_mock_streaming_result(final_output, new_items=None):
+    """Create a mock streaming result object."""
+    mock_result = MagicMock()
+    mock_result.final_output = final_output
+    mock_result.new_items = new_items or []
+
+    # Mock stream_events() as an async generator
+    async def stream_events():
+        # Yield nothing - tests don't need actual events
+        return
+        yield  # Make it a generator
+
+    mock_result.stream_events = stream_events
+    return mock_result
+
+
 @pytest.mark.asyncio
 async def test_message_handling_with_rate_limit(monkeypatch):
     """Test that rate limiting works correctly."""
@@ -24,24 +40,23 @@ async def test_message_handling_with_rate_limit(monkeypatch):
     mock_update.effective_user.username = "testuser"
     mock_update.message.text = "How does combat work?"
     mock_update.effective_chat.id = 12345
+    mock_update.message.reply_text = AsyncMock()
 
     mock_context = MagicMock()
     mock_context.bot.send_chat_action = AsyncMock()
     mock_context.bot.send_message = AsyncMock()
     mock_context.user_data = {}  # For conversation state
 
-    # Mock the Runner.run() to avoid actual agent execution
-    mock_result = MagicMock()
-    mock_result.final_output = "Test response"
-    mock_result.new_items = []
+    # Mock the Runner.run_streamed() to avoid actual agent execution
+    mock_result = create_mock_streaming_result(final_output="Test response")
 
-    with patch("src.main.Runner.run", new_callable=AsyncMock, return_value=mock_result):
+    with patch("src.main.Runner.run_streamed", return_value=mock_result):
         with patch("src.main.send_long_message", new_callable=AsyncMock) as mock_send:
             # First request should succeed
             await handle_message(mock_update, mock_context)
 
-            # Verify chat action was sent
-            mock_context.bot.send_chat_action.assert_called_once()
+            # Verify chat action was sent (can be called multiple times by ProgressReporter)
+            assert mock_context.bot.send_chat_action.called
 
             # Verify message was sent
             mock_send.assert_called_once()
@@ -55,9 +70,11 @@ async def test_pipeline_output_final_answer():
     mock_update.effective_user.username = "testuser"
     mock_update.message.text = "How does attack work in Gloomhaven?"
     mock_update.effective_chat.id = 12345
+    mock_update.message.reply_text = AsyncMock()
 
     mock_context = MagicMock()
     mock_context.bot.send_chat_action = AsyncMock()
+    mock_context.bot.send_message = AsyncMock()
     mock_context.user_data = {}
 
     # Create a proper PipelineOutput with final_answer
@@ -97,11 +114,9 @@ async def test_pipeline_output_final_answer():
         stage_reasoning="Game identified, answer found",
     )
 
-    mock_result = MagicMock()
-    mock_result.final_output = pipeline_output
-    mock_result.new_items = []
+    mock_result = create_mock_streaming_result(final_output=pipeline_output)
 
-    with patch("src.main.Runner.run", new_callable=AsyncMock, return_value=mock_result):
+    with patch("src.main.Runner.run_streamed", return_value=mock_result):
         with patch("src.main.send_long_message", new_callable=AsyncMock) as mock_send:
             await handle_message(mock_update, mock_context)
 
@@ -127,6 +142,7 @@ async def test_pipeline_output_clarification_needed():
 
     mock_context = MagicMock()
     mock_context.bot.send_chat_action = AsyncMock()
+    mock_context.bot.send_message = AsyncMock()
     mock_context.user_data = {}
 
     # Create PipelineOutput with clarification request
@@ -140,11 +156,9 @@ async def test_pipeline_output_clarification_needed():
         stage_reasoning="Game not specified in question",
     )
 
-    mock_result = MagicMock()
-    mock_result.final_output = pipeline_output
-    mock_result.new_items = []
+    mock_result = create_mock_streaming_result(final_output=pipeline_output)
 
-    with patch("src.main.Runner.run", new_callable=AsyncMock, return_value=mock_result):
+    with patch("src.main.Runner.run_streamed", return_value=mock_result):
         await handle_message(mock_update, mock_context)
 
         # Verify clarification was sent
