@@ -11,10 +11,11 @@ import signal
 from datetime import datetime
 
 from agents import Runner
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -22,7 +23,8 @@ from telegram.ext import (
 )
 
 from src.agent.definition import get_user_session, rules_agent
-from src.agent.schemas import ReasonedAnswer
+from src.agent.schemas import ActionType, PipelineOutput, ReasonedAnswer
+from src.utils.conversation_state import ConversationStage, ConversationState
 from src.config import settings
 from src.utils.logger import logger
 from src.utils.safety import rate_limiter, ugrep_semaphore
@@ -133,6 +135,167 @@ def format_reasoned_answer(answer: ReasonedAnswer, verbose: bool = False) -> str
                 )
 
     return "\n".join(parts)
+
+
+# ============================================
+# Multi-Stage Pipeline Helpers
+# ============================================
+
+
+def get_conversation_state(
+    context: ContextTypes.DEFAULT_TYPE, user_id: int
+) -> ConversationState:
+    """Get or create conversation state for user.
+
+    Args:
+        context: Telegram context with user_data
+        user_id: Telegram user ID
+
+    Returns:
+        ConversationState for this user
+    """
+    if "conv_state" not in context.user_data:
+        context.user_data["conv_state"] = ConversationState()
+        logger.debug(f"Created new conversation state for user {user_id}")
+    return context.user_data["conv_state"]
+
+
+def build_game_selection_keyboard(
+    candidates: list[dict], add_other_option: bool = True
+) -> InlineKeyboardMarkup:
+    """Build inline keyboard for game selection.
+
+    Args:
+        candidates: List of game candidates with 'english_name' and 'pdf_filename'
+        add_other_option: If True, adds "Other game" button at the bottom
+
+    Returns:
+        InlineKeyboardMarkup with game selection buttons
+    """
+    keyboard = []
+    for i, candidate in enumerate(candidates[:4]):  # Max 4 options to leave room for "Other"
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=candidate["english_name"],
+                    callback_data=f"game_select:{i}",
+                )
+            ]
+        )
+
+    # Add "Other game" option
+    if add_other_option:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text="🔤 Другая игра (введу название)",
+                    callback_data="game_select:other",
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def handle_pipeline_output(
+    output: PipelineOutput,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+) -> None:
+    """Route pipeline output based on action_type.
+
+    Args:
+        output: PipelineOutput from agent
+        update: Telegram update
+        context: Telegram context
+        user_id: Telegram user ID
+    """
+    conv_state = get_conversation_state(context, user_id)
+
+    logger.info(
+        f"[Pipeline] User {user_id} - action_type: {output.action_type.value}"
+    )
+    logger.debug(f"[Pipeline] stage_reasoning: {output.stage_reasoning}")
+
+    if output.action_type == ActionType.CLARIFICATION_NEEDED:
+        # Ask clarification question as text
+        conv_state.stage = ConversationStage.AWAITING_CLARIFICATION
+        conv_state.pending_question = output.clarification.question
+
+        logger.info(f"[Pipeline] Asking clarification: {output.clarification.question}")
+
+        await update.message.reply_text(
+            f"❓ {output.clarification.question}"
+        )
+
+    elif output.action_type == ActionType.GAME_SELECTION:
+        # Show inline keyboard for game selection
+        conv_state.stage = ConversationStage.AWAITING_GAME_SELECTION
+        conv_state.game_candidates = [
+            {"english_name": c.english_name, "pdf_filename": c.pdf_filename}
+            for c in output.game_identification.candidates
+        ]
+
+        keyboard = build_game_selection_keyboard(conv_state.game_candidates)
+
+        logger.info(
+            f"[Pipeline] Showing game selection: {len(conv_state.game_candidates)} options"
+        )
+
+        await update.message.reply_text(
+            f"🎮 {output.clarification.question}",
+            reply_markup=keyboard,
+        )
+
+    elif output.action_type == ActionType.SEARCH_IN_PROGRESS:
+        # Need more info during search
+        conv_state.stage = ConversationStage.AWAITING_CLARIFICATION
+        conv_state.pending_question = output.search_progress.additional_question
+
+        # Update game context
+        conv_state.set_game(
+            output.search_progress.game_name,
+            output.search_progress.pdf_file,
+        )
+
+        logger.info(
+            f"[Pipeline] Search in progress, asking: {output.search_progress.additional_question}"
+        )
+
+        await update.message.reply_text(
+            f"🔍 Ищу в правилах {output.search_progress.game_name}...\n\n"
+            f"❓ {output.search_progress.additional_question}"
+        )
+
+    elif output.action_type == ActionType.FINAL_ANSWER:
+        # Complete answer - update game context and send response
+        conv_state.reset_pending()
+
+        if output.game_identification:
+            conv_state.set_game(
+                output.game_identification.identified_game,
+                output.game_identification.pdf_file,
+            )
+            logger.debug(
+                f"[Pipeline] Set game context: {output.game_identification.identified_game}"
+            )
+
+        # Use existing format_reasoned_answer function
+        debug_enabled = user_debug_mode.get(user_id, False)
+        is_admin = settings.admin_ids and user_id in settings.admin_ids
+        response_text = format_reasoned_answer(
+            output.final_answer,
+            verbose=debug_enabled or is_admin,
+        )
+
+        log_reasoning_chain(user_id, output.final_answer)
+
+        await send_long_message(
+            bot=context.bot,
+            chat_id=update.effective_chat.id,
+            text=response_text,
+        )
 
 
 def log_reasoning_chain(user_id: int, answer: ReasonedAnswer) -> None:
@@ -303,12 +466,71 @@ async def toggle_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ============================================
+# Callback Query Handler (Inline Buttons)
+# ============================================
+
+
+async def handle_game_selection(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle inline button callback for game selection.
+
+    Args:
+        update: Telegram update with callback query
+        context: Telegram context
+    """
+    query = update.callback_query
+    await query.answer()  # Acknowledge callback to remove loading state
+
+    user_id = query.from_user.id
+    conv_state = get_conversation_state(context, user_id)
+
+    # Parse callback data: "game_select:0"
+    try:
+        _, index_str = query.data.split(":")
+        index = int(index_str)
+    except (ValueError, AttributeError):
+        logger.error(f"Invalid callback data: {query.data}")
+        await query.edit_message_text("❌ Invalid selection. Please try again.")
+        conv_state.reset_pending()
+        return
+
+    # Validate index
+    if index >= len(conv_state.game_candidates):
+        logger.warning(
+            f"User {user_id} selected expired game index {index}, "
+            f"candidates: {len(conv_state.game_candidates)}"
+        )
+        await query.edit_message_text(
+            "⏰ Selection expired. Please ask your question again."
+        )
+        conv_state.reset_pending()
+        return
+
+    # Get selected game
+    selected = conv_state.game_candidates[index]
+    conv_state.set_game(selected["english_name"], selected["pdf_filename"])
+    conv_state.reset_pending()
+
+    logger.info(
+        f"[Pipeline] User {user_id} selected game: {selected['english_name']}"
+    )
+
+    # Update message to show selection
+    await query.edit_message_text(
+        f"✅ Выбрана игра: *{selected['english_name']}*\n\n"
+        "Теперь задайте ваш вопрос об этой игре.",
+        parse_mode="Markdown",
+    )
+
+
+# ============================================
 # Message Handler
 # ============================================
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle all text messages using OpenAI Agent.
+    """Handle all text messages using multi-stage pipeline.
 
     Args:
         update: Telegram update object
@@ -325,6 +547,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"⏳ {rate_limit_msg}")
         return
 
+    # Get conversation state
+    conv_state = get_conversation_state(context, user.id)
+
+    # Build context-aware input for agent
+    agent_input = message_text
+
+    # Inject game context if available
+    if conv_state.has_game_context():
+        agent_input = (
+            f"[Context: Current game is '{conv_state.current_game}', "
+            f"PDF: '{conv_state.current_pdf}']\n\n"
+            f"User question: {message_text}"
+        )
+        logger.debug(
+            f"[Pipeline] Injected game context: {conv_state.current_game}"
+        )
+
     # Send typing indicator
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action="typing"
@@ -337,26 +576,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Run agent with semaphore to limit concurrent searches
         async with ugrep_semaphore:
             result = await Runner.run(
-                starting_agent=rules_agent, input=message_text, session=session
+                starting_agent=rules_agent, input=agent_input, session=session
             )
 
         # Log execution details
         logger.debug(f"Agent steps: {len(result.new_items)}")
         for i, step in enumerate(result.new_items, 1):
             # Pretty-print structured outputs, show summary for others
-            if hasattr(step, 'raw_item') and hasattr(step.raw_item, 'content'):
+            if hasattr(step, "raw_item") and hasattr(step.raw_item, "content"):
                 # Extract just the text content from message outputs
                 content = step.raw_item.content
                 if isinstance(content, list) and len(content) > 0:
-                    text_content = content[0].text if hasattr(content[0], 'text') else str(content[0])
+                    text_content = (
+                        content[0].text
+                        if hasattr(content[0], "text")
+                        else str(content[0])
+                    )
                     # Pretty-print JSON if it's parseable
                     try:
                         parsed = json.loads(text_content)
-                        logger.debug(f"  Step {i}: {step.type}: {step.raw_item.model_dump_json(indent=2, ensure_ascii=False)}")
-                        logger.debug(f"    Output (formatted):\n{json.dumps(parsed, indent=2, ensure_ascii=False)}")
+                        logger.debug(
+                            f"  Step {i}: {step.type}: "
+                            f"{step.raw_item.model_dump_json(indent=2, ensure_ascii=False)}"
+                        )
+                        logger.debug(
+                            f"    Output (formatted):\n"
+                            f"{json.dumps(parsed, indent=2, ensure_ascii=False)}"
+                        )
                     except (json.JSONDecodeError, AttributeError):
                         # Not JSON, log first 200 chars
-                        preview = text_content[:200] + "..." if len(text_content) > 200 else text_content
+                        preview = (
+                            text_content[:200] + "..."
+                            if len(text_content) > 200
+                            else text_content
+                        )
                         logger.debug(f"  Step {i}: {step.type} - {preview}")
                 else:
                     logger.debug(f"  Step {i}: {step.type}")
@@ -364,20 +617,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # For other step types, show summary
                 logger.debug(f"  Step {i}: {type(step).__name__}")
 
-        # Handle structured SGR output
-        if isinstance(result.final_output, ReasonedAnswer):
-            # Log full reasoning chain for analysis
+        # Handle multi-stage pipeline output
+        if isinstance(result.final_output, PipelineOutput):
+            await handle_pipeline_output(
+                result.final_output, update, context, user.id
+            )
+        elif isinstance(result.final_output, ReasonedAnswer):
+            # Backward compatibility: handle old ReasonedAnswer format
             log_reasoning_chain(user.id, result.final_output)
 
-            # Check if verbose mode enabled (debug mode or admin)
             is_admin = settings.admin_ids and user.id in settings.admin_ids
             debug_enabled = user_debug_mode.get(user.id, False)
-            show_verbose = is_admin or debug_enabled
 
-            # Format for Telegram display
             response_text = format_reasoned_answer(
                 result.final_output,
-                verbose=show_verbose,  # Show reasoning chain if debug mode
+                verbose=is_admin or debug_enabled,
+            )
+
+            await send_long_message(
+                bot=context.bot, chat_id=update.effective_chat.id, text=response_text
             )
         else:
             # Fallback for non-structured output
@@ -389,10 +647,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.warning(
                 f"Non-structured output received: {type(result.final_output)}"
             )
-
-        await send_long_message(
-            bot=context.bot, chat_id=update.effective_chat.id, text=response_text
-        )
+            await send_long_message(
+                bot=context.bot, chat_id=update.effective_chat.id, text=response_text
+            )
 
     except Exception:
         logger.exception(f"Error handling message from user {user.id}")
@@ -433,6 +690,12 @@ def main() -> None:
     application.add_handler(CommandHandler("id", get_my_id))
     application.add_handler(CommandHandler("health", health_check))
     application.add_handler(CommandHandler("debug", toggle_debug))
+
+    # Callback query handler for inline buttons (game selection)
+    application.add_handler(
+        CallbackQueryHandler(handle_game_selection, pattern="^game_select:")
+    )
+
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )

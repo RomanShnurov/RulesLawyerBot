@@ -112,14 +112,14 @@ def search_inside_file_ugrep(
             # Build ugrep command
             # -%: Boolean patterns (space=AND, |=OR, -=NOT)
             # -i: case insensitive
-            # -C5: 5 lines context (enough for rule understanding)
-            # --filter: convert PDF to text on-the-fly (% = file path)
+            # -C20: 20 lines context (enough for rule understanding)
+            # --filter: convert PDF to text on-the-fly (stdin -> stdout)
             cmd = [
                 "ugrep",
                 "-%",  # Boolean query mode
                 "-i",  # Case insensitive
                 "-C20",  # 20 lines of context
-                "--filter=pdf:pdftotext % -",  # PDF text extraction
+                "--filter=pdf:pdftotext - -",  # PDF text extraction (stdin to stdout)
                 keywords,
                 str(pdf_path),
             ]
