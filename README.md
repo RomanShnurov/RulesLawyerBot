@@ -1,22 +1,31 @@
 # RulesLawyerBot
 
-A production-ready Telegram bot that acts as a board game rules referee, using OpenAI's Agents SDK to search through PDF rulebooks and answer questions in multiple languages.
+A production-ready Telegram bot that acts as a board game rules referee, using OpenAI's Agents SDK with a multi-stage conversational pipeline to search through PDF rulebooks and answer questions in multiple languages.
 
 ## Features
 
 ### Core Capabilities
+- **Multi-Stage Conversational Pipeline**: Interactive game selection and clarification flow
 - **Intelligent Rules Search**: Uses OpenAI Agents SDK to understand and answer rules questions
+- **Schema-Guided Reasoning (SGR)**: Transparent reasoning chains with confidence scores
+- **Streaming Progress Updates**: Fun, thematic progress messages during searches
 - **Fast PDF Search**: Leverages `ugrep` and `pdftotext` for efficient text extraction
 - **Multilingual Support**: Handles queries in English, Russian, and other languages
 - **Smart Filename Translation**: Automatically translates localized game names to English filenames
 - **Per-User Sessions**: Isolated SQLite conversation history for each user
+- **Game Context Memory**: Remembers current game across conversation turns
+
+### Interactive UI
+- **Inline Keyboard Buttons**: Game selection via clickable buttons
+- **Fuzzy Game Search**: `/games` command with smart search and suggestions
+- **Context-Aware Responses**: Answers formatted with sources and related questions
+- **Progress Indicators**: Real-time updates with creative status messages
 
 ### Production-Ready Features
 - **Rate Limiting**: Configurable request limits per user (default: 10 req/min)
 - **Concurrent Search Control**: Semaphore-based limits for resource management (max 4 concurrent searches)
 - **Async Architecture**: Non-blocking operations for optimal performance
 - **Long Message Handling**: Automatic splitting of responses >4000 characters
-- **Admin Commands**: Health check and monitoring commands for administrators
 - **Graceful Shutdown**: Proper signal handling for zero-downtime deployments
 - **Comprehensive Testing**: Unit tests, integration tests, and load testing
 
@@ -79,13 +88,28 @@ RulesLawyerBot/
 │   ├── agent/
 │   │   ├── __init__.py
 │   │   ├── definition.py    # Agent creation & session management
-│   │   └── tools.py         # Agent tools (search_filenames, ugrep, etc.)
+│   │   ├── tools.py         # Agent tools (search_filenames, ugrep, etc.)
+│   │   └── schemas.py       # Pydantic schemas for SGR pipeline
+│   ├── handlers/
+│   │   ├── __init__.py
+│   │   ├── commands.py      # Command handlers (/start, /games)
+│   │   ├── messages.py      # Message handler with streaming
+│   │   └── callbacks.py     # Inline button callback handlers
+│   ├── pipeline/
+│   │   ├── __init__.py
+│   │   ├── handler.py       # Multi-stage pipeline output routing
+│   │   └── state.py         # Conversation state management
+│   ├── formatters/
+│   │   ├── __init__.py
+│   │   └── sgr.py           # Schema-Guided Reasoning formatting
 │   └── utils/
 │       ├── __init__.py
 │       ├── logger.py        # Logging configuration
 │       ├── timer.py         # Performance monitoring (ScopeTimer)
 │       ├── safety.py        # Rate limiting, semaphore, error handling
-│       └── telegram_helpers.py  # Message splitting utilities
+│       ├── telegram_helpers.py  # Message splitting utilities
+│       ├── conversation_state.py # Per-user state tracking
+│       └── progress_reporter.py  # Streaming progress updates
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py          # Pytest fixtures
@@ -132,10 +156,14 @@ RulesLawyerBot/
 
 ### User Commands
 - `/start` - Show welcome message and usage instructions
-- `/id` - Display your Telegram user ID
+- `/games` - List all available games or search with `/games <query>`
 
-### Admin Commands
-- `/health` - Check bot status and uptime (admin only)
+### Examples
+```
+/games                    # List all games
+/games wingspan          # Search for "Wingspan"
+/games gloomy            # Fuzzy search finds "Gloomhaven"
+```
 
 ## Development Commands
 
@@ -174,29 +202,68 @@ make clean       # Remove cache files
 
 ## How It Works
 
-### Message Processing Flow
+### Multi-Stage Pipeline Flow
+
+The bot uses a conversational pipeline that adapts based on user input:
 
 1. **User sends a message** to the bot in any supported language
 2. **Rate limiting** checks if user hasn't exceeded request limits
-3. **Agent processes the query** using OpenAI's Agents SDK
-4. **Tool selection** - Agent chooses appropriate search tools:
+3. **Game Identification** - Determine which game to search:
+   - Uses session context if game was discussed before
+   - Shows inline keyboard buttons if multiple games match
+   - Asks clarification if game name is unclear
+4. **Agent processes the query** using OpenAI's Agents SDK with streaming:
    - `search_filenames(query)`: Find PDF files by game name
    - `search_inside_file_ugrep(filename, keywords)`: Fast regex search inside PDFs
    - `read_full_document(filename)`: Fallback PDF reader (pypdf)
-5. **Response generation** - Answer sent back in user's language
-6. **Session persistence** - Conversation saved to user's SQLite database
+   - Progress updates shown with fun thematic messages
+5. **Clarification (if needed)** - Agent asks follow-up questions for complex queries
+6. **Response generation** - Structured answer with:
+   - Direct answer with quotes from rulebooks
+   - Sources and page references
+   - Confidence indicator (if < 80%)
+   - Related questions suggestions
+   - Full reasoning chain for admins
+7. **Session persistence** - Conversation and game context saved to user's SQLite database
+
+### Pipeline Action Types
+
+- **CLARIFICATION_NEEDED**: Bot asks text question to clarify ambiguity
+- **GAME_SELECTION**: Bot shows inline keyboard for game selection
+- **SEARCH_IN_PROGRESS**: Bot reports search progress + asks question
+- **FINAL_ANSWER**: Bot sends complete answer with reasoning
 
 ### Architecture Highlights
+
+**Multi-Stage Pipeline**
+- Conversational flow with game identification, clarification, search
+- Inline keyboard buttons for interactive selection
+- Context-aware responses using session history
+- Structured outputs with `ActionType` discriminator
+
+**Streaming & Progress**
+- Real-time progress updates during agent execution
+- Fun, thematic status messages (fantasy RPG theme)
+- Debounced message updates to avoid spam
+- Progress message deleted after final response
 
 **Async-First Design**
 - All blocking operations wrapped in `asyncio.to_thread()`
 - Non-blocking Telegram event loop
 - Concurrent request handling
+- Streaming agent execution with event processing
 
 **Per-User Isolation**
 - Separate SQLite session database for each user
 - Prevents database locks
 - Conversation history maintained per user
+- Per-user state tracking for UI flow (game context, pending questions)
+
+**Schema-Guided Reasoning (SGR)**
+- Structured outputs with complete reasoning chains
+- Confidence scores and source references
+- Transparent decision-making process
+- Verbose mode for admins shows full reasoning
 
 **Resource Management**
 - Semaphore limits concurrent ugrep processes (default: 4)
@@ -210,10 +277,15 @@ make clean       # Remove cache files
 
 ### Agent Tools
 
+**`list_directory_tree()`**
+- Lists all available PDF files with structure
+- Used for game identification stage
+
 **`search_filenames(query)`**
 - Searches for PDF files in `rules_pdfs/` directory
 - Case-insensitive filename matching
 - Limits results to 50 files to prevent token overflow
+- Returns `GameCandidate` objects with confidence scores
 
 **`search_inside_file_ugrep(filename, keywords)`**
 - Fast regex search using `ugrep` CLI
@@ -221,6 +293,7 @@ make clean       # Remove cache files
 - 2 lines of context around matches
 - 30-second timeout protection
 - Truncates output at 10,000 characters
+- Semaphore-controlled for resource management
 
 **`read_full_document(filename)`**
 - Fallback PDF reader using `pypdf` library
@@ -400,8 +473,19 @@ For issues and questions, please open an issue on GitHub.
 - ✅ Async architecture for performance
 - ✅ Docker multi-stage build
 - ✅ Comprehensive testing
-- ✅ Admin commands and monitoring
 - ✅ Documentation
+
+### Completed (v0.2.0 - Multi-Stage Pipeline)
+- ✅ Multi-stage conversational pipeline
+- ✅ Schema-Guided Reasoning (SGR) with structured outputs
+- ✅ Inline keyboard buttons for game selection
+- ✅ Streaming progress updates with fun messages
+- ✅ `/games` command with fuzzy search
+- ✅ Game context persistence across conversation
+- ✅ Callback query handlers for UI interactions
+- ✅ Modular handler organization (commands, messages, callbacks)
+- ✅ Progress reporter with thematic status messages
+- ✅ Confidence scores and source references in answers
 
 ### Future Enhancements
 See [docs/plans/next_steps.md](docs/plans/next_steps.md) for detailed roadmap:
@@ -410,6 +494,8 @@ See [docs/plans/next_steps.md](docs/plans/next_steps.md) for detailed roadmap:
 - Prometheus metrics and monitoring
 - Webhook mode for Telegram (instead of polling)
 - Advanced caching strategies
+- Voice message support for questions
+- Image recognition for card/component identification
 
 ---
 

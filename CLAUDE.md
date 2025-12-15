@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RulesLawyerBot is a production-ready Telegram bot that acts as a board game rules referee, using OpenAI's Agents SDK to search through PDF rulebooks and answer questions in multiple languages.
+RulesLawyerBot is a production-ready Telegram bot that acts as a board game rules referee, using OpenAI's Agents SDK with a multi-stage conversational pipeline to search through PDF rulebooks and answer questions in multiple languages.
 
-**Key Features**: Async architecture, per-user session isolation, rate limiting, concurrent search control, comprehensive testing.
+**Key Features**: Multi-stage pipeline with inline UI, Schema-Guided Reasoning (SGR), streaming progress updates, async architecture, per-user session isolation, rate limiting, concurrent search control, comprehensive testing.
 
 ## Quick Commands
 
@@ -57,12 +57,24 @@ src/
 ├── config.py               # Settings with pydantic-settings
 ├── agent/
 │   ├── definition.py       # Agent creation & session management
-│   └── tools.py            # Agent tools (@function_tool decorated)
+│   ├── tools.py            # Agent tools (@function_tool decorated)
+│   └── schemas.py          # Pydantic schemas for SGR pipeline
+├── handlers/
+│   ├── commands.py         # Command handlers (/start, /games)
+│   ├── messages.py         # Message handler with streaming
+│   └── callbacks.py        # Inline button callback handlers
+├── pipeline/
+│   ├── handler.py          # Multi-stage pipeline output routing
+│   └── state.py            # Conversation state management
+├── formatters/
+│   └── sgr.py              # Schema-Guided Reasoning output formatting
 └── utils/
     ├── logger.py           # Logging configuration
     ├── timer.py            # Performance monitoring (ScopeTimer)
     ├── safety.py           # Rate limiting, semaphore, error handling
-    └── telegram_helpers.py # Message splitting utilities
+    ├── telegram_helpers.py # Message splitting utilities
+    ├── conversation_state.py # Per-user state tracking
+    └── progress_reporter.py  # Streaming progress updates
 ```
 
 ### Key Components
@@ -81,19 +93,42 @@ src/
   - `search_filenames(query)`: Find PDFs by game name
   - `search_inside_file_ugrep(filename, keywords)`: Fast regex search with ugrep
   - `read_full_document(filename)`: Fallback PDF reader (pypdf)
+- **schemas.py**: Pydantic models for structured outputs
+  - `PipelineOutput`: Multi-stage pipeline with `ActionType` discriminator
+  - `ReasonedAnswer`: SGR output with full reasoning chain
+  - `GameIdentification`, `SearchProgress`: Pipeline stage schemas
 
-**3. Telegram Bot (src/main.py)**
-- Async handlers: `start_command`, `get_my_id`, `health_check`, `handle_message`
-- Rate limiting check before processing messages
-- Sends "typing" action during processing
-- Uses `send_long_message()` to handle responses >4000 chars
-- Graceful shutdown with signal handling
+**3. Multi-Stage Pipeline (src/pipeline/)**
+- **handler.py**: Routes pipeline outputs to Telegram UI
+  - `handle_pipeline_output()`: Processes agent output by `ActionType`
+  - `build_game_selection_keyboard()`: Creates inline button menus
+- **state.py**: Per-user conversation state management
+  - `get_conversation_state()`: Retrieves state from `context.user_data`
+  - Tracks current game context, pending clarifications
 
-**4. Utilities (src/utils/)**
+**4. Telegram Handlers (src/handlers/)**
+- **commands.py**: Command implementations
+  - `start_command()`: Welcome message with usage instructions
+  - `games_command()`: List/search available games with fuzzy matching
+- **messages.py**: Main message processing
+  - `handle_message()`: Multi-stage pipeline with streaming progress
+  - Context injection for game-aware conversations
+- **callbacks.py**: Inline button handlers
+  - `handle_game_selection()`: Process game selection from inline keyboard
+
+**5. Output Formatters (src/formatters/)**
+- **sgr.py**: Schema-Guided Reasoning formatting
+  - `format_reasoned_answer()`: Formats `ReasonedAnswer` for Telegram
+  - `log_reasoning_chain()`: Logs full reasoning for debugging
+  - Verbose mode for admins shows complete reasoning chain
+
+**6. Utilities (src/utils/)**
 - **logger.py**: Dual output (console + file), UTF-8 encoding
 - **timer.py**: `ScopeTimer` context manager for performance monitoring
 - **safety.py**: `rate_limiter` (per-user), `ugrep_semaphore` (concurrent search control)
 - **telegram_helpers.py**: `send_long_message()` splits long responses
+- **conversation_state.py**: Per-user state tracking (game context, UI stage)
+- **progress_reporter.py**: Streaming progress updates with fun messages
 
 ### Per-User Session Isolation
 
@@ -119,6 +154,29 @@ session = SQLiteSession(db_path=f"{settings.session_db_dir}/user_{user_id}.db")
 - Prevents resource exhaustion
 - Configure via `MAX_CONCURRENT_SEARCHES` env var
 
+### Multi-Stage Pipeline Architecture
+
+The bot uses a **conversational pipeline** with multiple stages (src/agent/schemas.py):
+
+**Pipeline Flow**:
+1. **Game Identification**: Determine which game the user is asking about
+   - Uses session context or asks for clarification
+   - Shows inline keyboard for game selection if ambiguous
+2. **Clarification**: Ask follow-up questions if query is unclear
+3. **Search**: Execute searches with progress updates
+4. **Final Answer**: Return complete answer with reasoning chain
+
+**Action Types** (`ActionType` enum):
+- `CLARIFICATION_NEEDED`: Bot asks text question
+- `GAME_SELECTION`: Bot shows inline keyboard buttons
+- `SEARCH_IN_PROGRESS`: Bot reports search progress + asks question
+- `FINAL_ANSWER`: Bot sends complete answer
+
+**Conversation State** (src/utils/conversation_state.py):
+- Per-user state stored in `context.user_data`
+- Tracks: current game, pending questions, UI stage
+- Game context persists across questions in same session
+
 ### Agent Instructions Pattern
 
 The agent has **specialized multilingual search logic** (src/agent/definition.py):
@@ -130,7 +188,12 @@ The agent has **specialized multilingual search logic** (src/agent/definition.py
    - Example: "movement" → `перемещ|движен|ход|бег`
    - Example: "attack" → `атак|удар|бой|сраж`
 
-3. **Mandatory Tool Calling Workflow**:
+3. **Schema-Guided Reasoning (SGR)**:
+   - Agent outputs structured `PipelineOutput` or `ReasonedAnswer`
+   - Complete reasoning chain captured in schemas
+   - Transparent decision-making with confidence scores
+
+4. **Mandatory Tool Calling Workflow**:
    - Agent MUST call tools before outputting structured response
    - Sequence: `list_directory_tree()` → `search_filenames()` → `search_inside_file_ugrep()`
    - Instructions explicitly forbid predicting/guessing tool results
@@ -178,8 +241,13 @@ from src.agent.tools import my_new_tool, search_filenames, ...
 ```
 
 ### Adding New Telegram Commands
-1. Define async handler in `src/main.py`
-2. Register with `application.add_handler(CommandHandler("command_name", handler))`
+1. Define async handler in `src/handlers/commands.py`
+2. Import in `src/main.py` and register with `application.add_handler(CommandHandler("command_name", handler))`
+
+### Adding Inline Button Handlers
+1. Define async handler in `src/handlers/callbacks.py`
+2. Register in `src/main.py` with `CallbackQueryHandler(handler, pattern="^prefix:")`
+3. Use callback data format: `"action:parameter"` for parsing
 
 ### Changing Rate Limits
 - Modify `MAX_REQUESTS_PER_MINUTE` or `MAX_CONCURRENT_SEARCHES` in `.env`
