@@ -11,6 +11,7 @@ from pypdf import PdfReader
 
 from src.config import settings
 from src.utils.logger import logger
+from src.utils.safety import safe_execution
 from src.utils.timer import ScopeTimer
 
 # Type variable for decorator
@@ -38,6 +39,7 @@ def async_tool(func: F) -> F:
 
 
 @function_tool
+@safe_execution
 @async_tool
 def search_filenames(query: str) -> str:
     """Search for PDF files by filename in the rules library.
@@ -49,35 +51,31 @@ def search_filenames(query: str) -> str:
         List of matching filenames or error message
     """
     with ScopeTimer(f"search_filenames('{query}')"):
-        try:
-            pdf_dir = Path(settings.pdf_storage_path)
-            if not pdf_dir.exists():
-                return f"Error: PDF directory not found at {pdf_dir}"
+        pdf_dir = Path(settings.pdf_storage_path)
+        if not pdf_dir.exists():
+            return f"Error: PDF directory not found at {pdf_dir}"
 
-            # Case-insensitive search
-            query_lower = query.lower()
-            matches = [
-                f.name for f in pdf_dir.glob("*.pdf") if query_lower in f.name.lower()
-            ]
+        # Case-insensitive search
+        query_lower = query.lower()
+        matches = [
+            f.name for f in pdf_dir.glob("*.pdf") if query_lower in f.name.lower()
+        ]
 
-            if not matches:
-                return f"No PDF files found matching '{query}'"
+        if not matches:
+            return f"No PDF files found matching '{query}'"
 
-            # Limit results to avoid token overflow
-            if len(matches) > 50:
-                matches = matches[:50]
-                return f"Found {len(matches)}+ files (showing first 50):\n" + "\n".join(
-                    matches
-                )
+        # Limit results to avoid token overflow
+        if len(matches) > 50:
+            matches = matches[:50]
+            return f"Found {len(matches)}+ files (showing first 50):\n" + "\n".join(
+                matches
+            )
 
-            return f"Found {len(matches)} file(s):\n" + "\n".join(matches)
-
-        except Exception as e:
-            logger.exception(f"Error in search_filenames: {e}")
-            return f"Error searching files: {str(e)}"
+        return f"Found {len(matches)} file(s):\n" + "\n".join(matches)
 
 
 @function_tool
+@safe_execution
 @async_tool
 def search_inside_file_ugrep(
     filename: str, keywords: str, fuzzy: bool = False
@@ -104,71 +102,58 @@ def search_inside_file_ugrep(
         search_inside_file_ugrep("game.pdf", "movment", fuzzy=True)
     """
     with ScopeTimer(f"search_inside_file_ugrep('{filename}', '{keywords}')"):
-        try:
-            pdf_path = Path(settings.pdf_storage_path) / filename
-            if not pdf_path.exists():
-                return f"Error: File '{filename}' not found"
+        pdf_path = Path(settings.pdf_storage_path) / filename
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"'{filename}'")
 
-            # Build ugrep command
-            # -%: Boolean patterns (space=AND, |=OR, -=NOT)
-            # -i: case insensitive
-            # -C20: 20 lines context (enough for rule understanding)
-            # --filter: convert PDF to text on-the-fly (stdin -> stdout)
-            cmd = [
-                "ugrep",
-                "-%",  # Boolean query mode
-                "-i",  # Case insensitive
-                "-C20",  # 20 lines of context
-                "--filter=pdf:pdftotext - -",  # PDF text extraction (stdin to stdout)
-                keywords,
-                str(pdf_path),
-            ]
+        # Build ugrep command
+        # -%: Boolean patterns (space=AND, |=OR, -=NOT)
+        # -i: case insensitive
+        # -C20: 20 lines context (enough for rule understanding)
+        # --filter: convert PDF to text on-the-fly (stdin -> stdout)
+        cmd = [
+            "ugrep",
+            "-%",  # Boolean query mode
+            "-i",  # Case insensitive
+            "-C20",  # 20 lines of context
+            "--filter=pdf:pdftotext - -",  # PDF text extraction (stdin to stdout)
+            keywords,
+            str(pdf_path),
+        ]
 
-            # Add fuzzy matching for typo tolerance
-            if fuzzy:
-                cmd.insert(2, "-Z")  # Insert after -%
+        # Add fuzzy matching for typo tolerance
+        if fuzzy:
+            cmd.insert(2, "-Z")  # Insert after -%
 
-            logger.debug("Searching with ugrep command: " + " ".join(cmd))
+        logger.debug("Searching with ugrep command: " + " ".join(cmd))
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,  # Prevent hanging
-            )
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,  # Prevent hanging
+        )
 
-            if result.returncode == 0:
-                output = result.stdout.strip()
-                # Truncate to avoid token overflow
-                logger.debug(f"ugrep output: {output}")
-                if len(output) > 30000:
-                    output = output[:30000] + "\n...(truncated)"
-                return output if output else "No matches found"
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            # Truncate to avoid token overflow
+            logger.debug(f"ugrep output: {output}")
+            if len(output) > 30000:
+                output = output[:30000] + "\n...(truncated)"
+            return output if output else "No matches found"
 
-            elif result.returncode == 1:
-                logger.debug(f"No matches found for '{keywords}'")
-                return "No matches found"
+        elif result.returncode == 1:
+            logger.debug(f"No matches found for '{keywords}'")
+            return "No matches found"
 
-            else:
-                error = result.stderr.strip()
-                logger.error(f"ugrep error: {error}")
-                return f"Search error: {error}"
-
-        except subprocess.TimeoutExpired:
-            return "Search timed out (>30s). Please try more specific keywords."
-
-        except FileNotFoundError:
-            return (
-                "Error: 'ugrep' tool not installed. "
-                "Please install: apt-get install ugrep (Linux) or brew install ugrep (macOS)"
-            )
-
-        except Exception as e:
-            logger.exception(f"Error in search_inside_file_ugrep: {e}")
-            return f"Search failed: {str(e)}"
+        else:
+            error = result.stderr.strip()
+            logger.error(f"ugrep error: {error}")
+            return f"Search error: {error}"
 
 
 @function_tool
+@safe_execution
 @async_tool
 def read_full_document(filename: str) -> str:
     """Fallback: Read entire PDF content using pypdf library.
@@ -182,73 +167,79 @@ def read_full_document(filename: str) -> str:
         Full text content (truncated to 100k chars) or error message
     """
     with ScopeTimer(f"read_full_document('{filename}')"):
-        try:
-            pdf_path = Path(settings.pdf_storage_path) / filename
-            if not pdf_path.exists():
-                return f"Error: File '{filename}' not found"
+        pdf_path = Path(settings.pdf_storage_path) / filename
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"'{filename}'")
 
-            reader = PdfReader(pdf_path)
-            text_parts = []
+        reader = PdfReader(pdf_path)
+        text_parts = []
 
-            for page_num, page in enumerate(reader.pages, 1):
-                text_parts.append(f"--- Page {page_num} ---\n")
-                text_parts.append(page.extract_text())
+        for page_num, page in enumerate(reader.pages, 1):
+            text_parts.append(f"--- Page {page_num} ---\n")
+            text_parts.append(page.extract_text())
 
-            full_text = "\n".join(text_parts)
+        full_text = "\n".join(text_parts)
 
-            # Truncate to avoid context overflow
-            if len(full_text) > 100000:
-                full_text = full_text[:100000] + "\n...(truncated at 100k chars)"
+        # Truncate to avoid context overflow
+        if len(full_text) > 100000:
+            full_text = full_text[:100000] + "\n...(truncated at 100k chars)"
 
-            return full_text
-
-        except Exception as e:
-            logger.exception(f"Error in read_full_document: {e}")
-            return f"Failed to read PDF: {str(e)}"
+        return full_text
 
 
 @function_tool
+@safe_execution
 @async_tool
 def list_directory_tree(path: str = "", max_depth: int = 3) -> str:
     """List directory structure as a tree.
 
-    Use this FIRST to understand the structure of the rules library
-    before searching for specific files.
+    Use this FIRST to:
+    1. Discover all available games when user asks "what games do you have?"
+    2. Understand the structure of the rules library before searching
 
     Args:
         path: Subdirectory path relative to rules library (empty = root)
         max_depth: Maximum depth to display (default: 3)
 
     Returns:
-        Tree-formatted directory structure showing folders and PDF files
+        - For root-level call with small library (<20 PDFs): Clean numbered game list
+        - Otherwise: Tree-formatted directory structure showing folders and PDFs
     """
     with ScopeTimer(f"list_directory_tree('{path}', max_depth={max_depth})"):
-        try:
-            base_path = Path(settings.pdf_storage_path)
-            target_path = base_path / path if path else base_path
+        base_path = Path(settings.pdf_storage_path)
+        target_path = base_path / path if path else base_path
 
-            if not target_path.exists():
-                return f"Error: Path '{path}' not found"
+        if not target_path.exists():
+            return f"Error: Path '{path}' not found"
 
-            if not target_path.is_dir():
-                return f"Error: '{path}' is not a directory"
+        if not target_path.is_dir():
+            return f"Error: '{path}' is not a directory"
 
-            lines = [f"{target_path.name}/"]
-            _build_tree(target_path, lines, "", max_depth, 0)
+        # Smart formatting for game discovery at root level
+        if path == "" and target_path == base_path:
+            pdf_files = sorted([f.stem for f in target_path.glob("*.pdf")])
 
-            output = "\n".join(lines)
+            # Small library: return clean numbered list for discovery
+            if len(pdf_files) <= 20:
+                output = f"Available games ({len(pdf_files)}):\n"
+                output += "\n".join(f"{i+1}. {name}" for i, name in enumerate(pdf_files))
 
-            logger.debug(f"Directory tree output: {output}")
+                logger.debug(f"Game discovery list: {output}")
+                return output
 
-            # Truncate to avoid token overflow
-            if len(output) > 10000:
-                output = output[:10000] + "\n...(truncated)"
+        # Default tree structure for navigation or large libraries
+        lines = [f"{target_path.name}/"]
+        _build_tree(target_path, lines, "", max_depth, 0)
 
-            return output
+        output = "\n".join(lines)
 
-        except Exception as e:
-            logger.exception(f"Error in list_directory_tree: {e}")
-            return f"Error listing directory: {str(e)}"
+        logger.debug(f"Directory tree output: {output}")
+
+        # Truncate to avoid token overflow
+        if len(output) > 10000:
+            output = output[:10000] + "\n...(truncated)"
+
+        return output
 
 
 def _build_tree(
