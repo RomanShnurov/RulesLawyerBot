@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.main import handle_message
+from src.handlers.messages import handle_message
 from src.agent.schemas import (
     ActionType,
     PipelineOutput,
@@ -50,8 +50,8 @@ async def test_message_handling_with_rate_limit(monkeypatch):
     # Mock the Runner.run_streamed() to avoid actual agent execution
     mock_result = create_mock_streaming_result(final_output="Test response")
 
-    with patch("src.main.Runner.run_streamed", return_value=mock_result):
-        with patch("src.main.send_long_message", new_callable=AsyncMock) as mock_send:
+    with patch("src.handlers.messages.Runner.run_streamed", return_value=mock_result):
+        with patch("src.handlers.messages.send_long_message", new_callable=AsyncMock) as mock_send:
             # First request should succeed
             await handle_message(mock_update, mock_context)
 
@@ -116,8 +116,8 @@ async def test_pipeline_output_final_answer():
 
     mock_result = create_mock_streaming_result(final_output=pipeline_output)
 
-    with patch("src.main.Runner.run_streamed", return_value=mock_result):
-        with patch("src.main.send_long_message", new_callable=AsyncMock) as mock_send:
+    with patch("src.handlers.messages.Runner.run_streamed", return_value=mock_result):
+        with patch("src.pipeline.handler.send_long_message", new_callable=AsyncMock) as mock_send:
             await handle_message(mock_update, mock_context)
 
             # Verify message was sent
@@ -158,7 +158,7 @@ async def test_pipeline_output_clarification_needed():
 
     mock_result = create_mock_streaming_result(final_output=pipeline_output)
 
-    with patch("src.main.Runner.run_streamed", return_value=mock_result):
+    with patch("src.handlers.messages.Runner.run_streamed", return_value=mock_result):
         await handle_message(mock_update, mock_context)
 
         # Verify clarification was sent
