@@ -44,8 +44,7 @@ just clean           # Remove cache files
 Key documentation:
 - [docs/QUICKSTART.md](docs/QUICKSTART.md) - Getting started guide
 - [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) - Docker deployment
-- [docs/plans/mvp/overview.md](docs/plans/mvp/overview.md) - Architecture overview
-- [docs/plans/next_steps.md](docs/plans/next_steps.md) - Future enhancements
+- [docs/SGR_ARCHITECTURE.md](docs/plans/mvp/overview.md) - SGR overview
 
 ## Architecture
 
