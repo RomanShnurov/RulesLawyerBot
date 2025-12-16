@@ -14,11 +14,10 @@ def setup_logging() -> logging.Logger:
     logger = logging.getLogger("boardgame_bot")
     logger.setLevel(getattr(logging, settings.log_level.upper()))
 
-    # Create formatters
+    # Create formatter
     detailed_formatter = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(message)s"
     )
-    simple_formatter = logging.Formatter("%(levelname)s: %(message)s")
 
     # Console handler (stdout)
     console_handler = logging.StreamHandler(sys.stdout)

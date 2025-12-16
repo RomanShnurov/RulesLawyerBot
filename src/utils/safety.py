@@ -74,8 +74,44 @@ rate_limiter = InMemoryRateLimiter()
 # Resource Management (Semaphore for ugrep)
 # ============================================
 
-# Global semaphore to limit concurrent ugrep processes
-ugrep_semaphore = asyncio.Semaphore(settings.max_concurrent_searches)
+class _SemaphoreManager:
+    """Lazy-initialized semaphore manager for async safety.
+
+    Creates the semaphore on first access within the running event loop,
+    avoiding issues with module-level asyncio primitive creation.
+    """
+
+    def __init__(self):
+        self._semaphore: asyncio.Semaphore | None = None
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        """Acquire the semaphore, initializing if needed."""
+        if self._semaphore is None:
+            async with self._lock:
+                # Double-check after acquiring lock
+                if self._semaphore is None:
+                    self._semaphore = asyncio.Semaphore(settings.max_concurrent_searches)
+                    logger.debug(f"Initialized ugrep semaphore with limit {settings.max_concurrent_searches}")
+        await self._semaphore.acquire()
+
+    def release(self) -> None:
+        """Release the semaphore."""
+        if self._semaphore is not None:
+            self._semaphore.release()
+
+    async def __aenter__(self) -> "_SemaphoreManager":
+        """Async context manager entry."""
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Async context manager exit."""
+        self.release()
+
+
+# Global semaphore manager instance (lazy initialization)
+ugrep_semaphore = _SemaphoreManager()
 
 
 # ============================================

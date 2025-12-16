@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 from src.agent.schemas import PipelineOutput
 from src.agent.tools import (
     list_directory_tree,
+    parallel_search_terms,
     read_full_document,
     search_filenames,
     search_inside_file_ugrep,
@@ -291,7 +292,19 @@ When you have sufficient information:
      - Dash = NOT: `"attack -ranged"` excludes ranged
      - Quotes for exact: `'"end of turn"'`
 
-4. `read_full_document(filename)` - Read entire PDF (LAST RESORT)
+4. `parallel_search_terms(filename, terms, fuzzy=False)` - Search multiple terms in parallel
+   - **Use when question involves MULTIPLE distinct concepts** requiring separate searches
+   - More efficient than sequential searches when you need to find:
+     * Multiple game mechanics (e.g., ["movement", "combat", "resource management"])
+     * Related concepts in complex questions (e.g., ["атак", "защит", "урон"])
+   - Returns JSON dict with results for each term
+   - **Example use cases:**
+     * "How do movement and combat work?" → `parallel_search_terms("game.pdf", ["movement", "combat"])`
+     * "Расскажи про атаку и защиту" → `parallel_search_terms("game.pdf", ["атак|удар", "защит"])`
+   - Limited to 10 terms max for performance
+   - Each term can use Boolean syntax (space/|/-)
+
+5. `read_full_document(filename)` - Read entire PDF (LAST RESORT)
    - Only use after 2+ failed ugrep searches
    - Very expensive token-wise, use sparingly
 
@@ -410,6 +423,7 @@ available games, then populate `options` with the game names found!
             list_directory_tree,  # First - for orientation
             search_filenames,
             search_inside_file_ugrep,
+            parallel_search_terms,  # Parallel search for multiple concepts
             read_full_document,
         ],
         output_type=PipelineOutput,  # Multi-stage SGR with action_type routing

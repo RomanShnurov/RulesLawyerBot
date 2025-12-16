@@ -11,7 +11,7 @@ from pypdf import PdfReader
 
 from src.config import settings
 from src.utils.logger import logger
-from src.utils.safety import safe_execution
+from src.utils.safety import safe_execution, ugrep_semaphore
 from src.utils.timer import ScopeTimer
 
 # Type variable for decorator
@@ -76,8 +76,7 @@ def search_filenames(query: str) -> str:
 
 @function_tool
 @safe_execution
-@async_tool
-def search_inside_file_ugrep(
+async def search_inside_file_ugrep(
     filename: str, keywords: str, fuzzy: bool = False
 ) -> str:
     """Search inside a PDF file using ugrep with Boolean pattern support.
@@ -127,12 +126,15 @@ def search_inside_file_ugrep(
 
         logger.debug("Searching with ugrep command: " + " ".join(cmd))
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,  # Prevent hanging
-        )
+        # Use semaphore to limit concurrent ugrep processes
+        async with ugrep_semaphore:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,  # Prevent hanging
+            )
 
         if result.returncode == 0:
             output = result.stdout.strip()
@@ -150,6 +152,73 @@ def search_inside_file_ugrep(
             error = result.stderr.strip()
             logger.error(f"ugrep error: {error}")
             return f"Search error: {error}"
+
+
+@function_tool
+@safe_execution
+async def parallel_search_terms(filename: str, terms: list[str], fuzzy: bool = False) -> str:
+    """Search for multiple terms in parallel within a PDF file.
+
+    This is more efficient than calling search_inside_file_ugrep multiple times
+    sequentially when you need to search for several distinct concepts.
+
+    Args:
+        filename: Name of the PDF file (must exist in rules_pdfs/)
+        terms: List of search terms (each can use Boolean logic like "move|teleport")
+        fuzzy: Enable fuzzy matching for all searches (default: False)
+
+    Returns:
+        JSON-formatted string with results for each term:
+        {
+            "term1": "matching text...",
+            "term2": "No matches found",
+            "term3": "Error: ...",
+            ...
+        }
+
+    Examples:
+        parallel_search_terms("game.pdf", ["movement", "attack", "defense"])
+        parallel_search_terms("game.pdf", ["move|teleport", "атак|удар", "защит"])
+    """
+    import json
+
+    with ScopeTimer(f"parallel_search_terms('{filename}', {len(terms)} terms)"):
+        if not terms:
+            return json.dumps({"error": "No search terms provided"})
+
+        # Limit to reasonable number of parallel searches
+        if len(terms) > 10:
+            logger.warning(f"Too many parallel search terms ({len(terms)}), limiting to 10")
+            terms = terms[:10]
+
+        logger.info(f"Launching {len(terms)} parallel searches in '{filename}'")
+
+        # Launch all searches in parallel
+        tasks = [
+            search_inside_file_ugrep(filename, term, fuzzy=fuzzy)
+            for term in terms
+        ]
+
+        # Gather results (exceptions are already handled by @safe_execution)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Build result dictionary
+        result_dict = {}
+        for term, result in zip(terms, results):
+            if isinstance(result, Exception):
+                result_dict[term] = f"Error: {str(result)}"
+            else:
+                # Truncate individual results to avoid huge outputs
+                if len(str(result)) > 5000:
+                    result_dict[term] = str(result)[:5000] + "\n...(truncated)"
+                else:
+                    result_dict[term] = str(result)
+
+        # Return as formatted JSON for easy parsing
+        output = json.dumps(result_dict, ensure_ascii=False, indent=2)
+
+        logger.info(f"Parallel search completed: {len(result_dict)} results")
+        return output
 
 
 @function_tool

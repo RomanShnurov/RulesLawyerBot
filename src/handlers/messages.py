@@ -15,7 +15,7 @@ from src.agent.schemas import PipelineOutput, ReasonedAnswer
 from src.config import settings
 from src.formatters.sgr import format_reasoned_answer, log_reasoning_chain
 from src.pipeline.handler import handle_pipeline_output
-from src.pipeline.state import get_conversation_state, is_debug_enabled
+from src.pipeline.state import get_conversation_state
 from src.utils.logger import logger
 from src.utils.progress_reporter import ProgressReporter
 from src.utils.safety import rate_limiter, ugrep_semaphore
@@ -165,12 +165,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Backward compatibility: handle old ReasonedAnswer format
             log_reasoning_chain(user.id, result.final_output)
 
+            # Verbose output only for admins
             is_admin = settings.admin_ids and user.id in settings.admin_ids
-            debug_enabled = is_debug_enabled(user.id)
 
             response_text = format_reasoned_answer(
                 result.final_output,
-                verbose=is_admin or debug_enabled,
+                verbose=is_admin,
             )
 
             # Delete progress message before sending response

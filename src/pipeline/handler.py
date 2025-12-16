@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from src.agent.schemas import ActionType, PipelineOutput
 from src.config import settings
 from src.formatters.sgr import format_reasoned_answer, log_reasoning_chain
-from src.pipeline.state import get_conversation_state, is_debug_enabled
+from src.pipeline.state import get_conversation_state
 from src.utils.conversation_state import ConversationStage
 from src.utils.logger import logger
 from src.utils.telegram_helpers import send_long_message
@@ -143,11 +143,11 @@ async def handle_pipeline_output(
             )
 
         # Use existing format_reasoned_answer function
-        debug_enabled = is_debug_enabled(user_id)
+        # Verbose output only for admins
         is_admin = settings.admin_ids and user_id in settings.admin_ids
         response_text = format_reasoned_answer(
             output.final_answer,
-            verbose=debug_enabled or is_admin,
+            verbose=is_admin,
         )
 
         log_reasoning_chain(user_id, output.final_answer)

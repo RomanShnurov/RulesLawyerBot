@@ -7,7 +7,6 @@ auditable agent responses.
 import asyncio
 import platform
 import signal
-from datetime import datetime
 
 from telegram import Update
 from telegram.ext import (
@@ -22,9 +21,6 @@ from telegram.ext import (
 from src.config import settings
 from src.handlers import callbacks, commands, messages
 from src.utils.logger import logger
-
-# Track bot uptime
-bot_start_time = datetime.now()
 
 
 # ============================================
@@ -53,15 +49,9 @@ def main() -> None:
     # Build application
     application = ApplicationBuilder().token(settings.telegram_token).build()
 
-    # Store bot_start_time in bot_data for health_check command
-    application.bot_data["start_time"] = bot_start_time
-
     # Register command handlers
     application.add_handler(CommandHandler("start", commands.start_command))
     application.add_handler(CommandHandler("games", commands.games_command))
-    application.add_handler(CommandHandler("id", commands.get_my_id))
-    application.add_handler(CommandHandler("health", commands.health_check))
-    application.add_handler(CommandHandler("debug", commands.toggle_debug))
 
     # Callback query handler for inline buttons (game selection)
     application.add_handler(

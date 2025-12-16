@@ -1,16 +1,14 @@
 """Telegram command handlers.
 
-Implements /start, /id, /health, /debug, and /games commands.
+Implements /start and /games commands.
 """
 
-from datetime import datetime
 from pathlib import Path
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from src.config import settings
-from src.pipeline.state import toggle_debug_mode
 from src.utils.logger import logger
 from src.utils.telegram_helpers import send_long_message
 
@@ -26,117 +24,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.info(f"User {user.id} ({user.username}) started bot")
 
     welcome_message = f"""
-Welcome, {user.first_name}!
+Привет, {user.first_name}!
 
-I'm your Board Game Rules Referee. Ask me anything about your board game rules!
+Я — твой помощник по правилам настольных игр. Задавай любые вопросы о правилах!
 
-**How to use:**
-1. Ask a question about game rules (e.g., "How does movement work in Gloomhaven?")
-2. I'll search through PDF rulebooks and provide answers
-3. You can ask follow-up questions - I remember our conversation!
+**Как пользоваться:**
+1. Задай вопрос о правилах (например, «Как работает движение в Gloomhaven?»)
+2. Я найду ответ в PDF-рулбуках
+3. Можешь задавать уточняющие вопросы — я помню контекст!
 
-**Commands:**
-- /start - Show this welcome message
-- /games - List available rulebooks (or search: /games <name>)
-- /id - Get your Telegram user ID
-- /debug - Toggle verbose mode (see my reasoning process)
+**Команды:**
+- /start — Показать это сообщение
+- /games — Список доступных игр (или поиск: /games <название>)
 
-**Tips:**
-- Use game names in English (e.g., "Arkham Horror" not "Ужас Аркхэма")
-- For Russian text search, I'll use smart regex patterns
-- Rate limit: {settings.max_requests_per_minute} requests per minute
+**Советы:**
+- Названия игр лучше писать на английском (например, «Arkham Horror»)
+- Русский текст в рулбуках тоже ищу с учётом морфологии
+- Лимит: {settings.max_requests_per_minute} запросов в минуту
 
-Type your question to get started!
+Напиши свой вопрос!
 """.strip()
 
     await update.message.reply_text(welcome_message)
-
-
-async def get_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /id command - show user's Telegram ID.
-
-    Args:
-        update: Telegram update object
-        context: Telegram context
-    """
-    user = update.effective_user
-    logger.info(f"User {user.id} ({user.username}) requested their ID")
-
-    await update.message.reply_text(
-        f"👤 Your Telegram User ID: `{user.id}`\n\n"
-        f"Name: {user.first_name} {user.last_name or ''}\n"
-        f"Username: @{user.username or 'N/A'}",
-        parse_mode="Markdown",
-    )
-
-
-async def health_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /health command for monitoring (admin only).
-
-    Args:
-        update: Telegram update object
-        context: Telegram context
-    """
-    user = update.effective_user
-
-    # Check if user is admin
-    if not settings.admin_ids or user.id not in settings.admin_ids:
-        logger.warning(
-            f"Unauthorized /health attempt by user {user.id} ({user.username})"
-        )
-        await update.message.reply_text(
-            "🚫 Unauthorized. This command is restricted to administrators."
-        )
-        return
-
-    # Get bot_start_time from context.bot_data (set in main.py)
-    bot_start_time = context.bot_data.get("start_time", datetime.now())
-    uptime = (datetime.now() - bot_start_time).total_seconds()
-
-    await update.message.reply_text(
-        f"✅ Bot is healthy\n"
-        f"⏱️ Uptime: {uptime:.0f}s\n"
-        f"📊 Rate limit: {settings.max_requests_per_minute} req/min\n"
-        f"👤 Your User ID: {user.id}"
-    )
-
-
-async def toggle_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /debug command - toggle verbose reasoning output.
-
-    When enabled, shows the full SGR reasoning chain including:
-    - How the question was understood
-    - What searches were performed
-    - Key findings from the rulebook
-    - Additional context gathered
-
-    Args:
-        update: Telegram update object
-        context: Telegram context
-    """
-    user = update.effective_user
-    new_state = toggle_debug_mode(user.id)
-
-    logger.info(f"User {user.id} ({user.username}) toggled debug mode: {new_state}")
-
-    if new_state:
-        await update.message.reply_text(
-            "🔍 *Debug mode enabled*\n\n"
-            "You will now see the full reasoning chain:\n"
-            "• How I understood your question\n"
-            "• What searches I performed\n"
-            "• Key findings from the rulebook\n"
-            "• Additional context gathered\n\n"
-            "Use /debug again to disable.",
-            parse_mode="Markdown",
-        )
-    else:
-        await update.message.reply_text(
-            "🔇 *Debug mode disabled*\n\n"
-            "You will now see only the answer.\n"
-            "Use /debug to enable verbose output.",
-            parse_mode="Markdown",
-        )
 
 
 async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
