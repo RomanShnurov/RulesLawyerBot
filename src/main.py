@@ -58,6 +58,15 @@ def main() -> None:
     # Build application
     application = ApplicationBuilder().token(settings.telegram_token).build()
 
+    # Register post-shutdown callback to flush Langfuse traces
+    async def on_shutdown(app: Application) -> None:
+        """Flush Langfuse traces on application shutdown."""
+        from src.utils.observability import shutdown_langfuse
+
+        shutdown_langfuse()
+
+    application.post_shutdown = on_shutdown
+
     # Register command handlers
     application.add_handler(CommandHandler("start", commands.start_command))
     application.add_handler(CommandHandler("games", commands.games_command))

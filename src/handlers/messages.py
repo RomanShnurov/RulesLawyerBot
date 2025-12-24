@@ -41,18 +41,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info(f"User {user.id}: {message_text[:100]}")
 
-    # Add user context to OpenTelemetry traces
+    # Add user context and input to OpenTelemetry traces
+    # See: https://langfuse.com/faq/all/empty-trace-input-and-output
+    trace_span = None
     if settings.tracing_enabled:
         try:
             from opentelemetry import trace
             from src.utils.observability import get_trace_context_for_user
 
-            span = trace.get_current_span()
-            if span.is_recording():
+            trace_span = trace.get_current_span()
+            if trace_span.is_recording():
                 for key, value in get_trace_context_for_user(user.id, user.username).items():
-                    span.set_attribute(key, value)
+                    trace_span.set_attribute(key, value)
+                # Set input for Langfuse trace visibility
+                trace_span.set_attribute("input.value", message_text)
+                # Set session ID for Langfuse session grouping (chat_id groups conversation)
+                trace_span.set_attribute("langfuse.session.id", str(update.effective_chat.id))
         except Exception as e:
-            logger.debug(f"Failed to add user context: {e}")
+            logger.debug(f"Failed to add trace context: {e}")
 
     # Check rate limit
     allowed, rate_limit_msg = await rate_limiter.check_rate_limit(user.id)
@@ -169,6 +175,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Handle multi-stage pipeline output
         if isinstance(result.final_output, PipelineOutput):
+            # Set output for Langfuse trace visibility
+            if trace_span and trace_span.is_recording():
+                try:
+                    trace_span.set_attribute(
+                        "output.value",
+                        result.final_output.model_dump_json(ensure_ascii=False)
+                    )
+                except Exception:
+                    pass
             # Delete progress message before sending response
             await progress.finalize()
             await handle_pipeline_output(
@@ -186,6 +201,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 verbose=is_admin,
             )
 
+            # Set output for Langfuse trace visibility
+            if trace_span and trace_span.is_recording():
+                try:
+                    trace_span.set_attribute("output.value", response_text)
+                except Exception:
+                    pass
+
             # Delete progress message before sending response
             await progress.finalize()
             await send_long_message(
@@ -201,6 +223,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.warning(
                 f"Non-structured output received: {type(result.final_output)}"
             )
+
+            # Set output for Langfuse trace visibility
+            if trace_span and trace_span.is_recording():
+                try:
+                    trace_span.set_attribute("output.value", response_text)
+                except Exception:
+                    pass
+
             # Delete progress message before sending response
             await progress.finalize()
             await send_long_message(
@@ -226,11 +256,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except Exception as e:
                 logger.debug(f"Failed to send trace URL: {e}")
 
-    except Exception:
+    except Exception as e:
         # Clean up progress message on error
         await progress.finalize()
         logger.exception(f"Error handling message from user {user.id}")
-        await update.message.reply_text(
+
+        error_message = (
             "❌ An error occurred while processing your request. "
             "Please try again or contact support."
         )
+
+        # Set error output for Langfuse trace visibility
+        if trace_span and trace_span.is_recording():
+            try:
+                trace_span.set_attribute("output.value", f"Error: {e}")
+            except Exception:
+                pass
+
+        await update.message.reply_text(error_message)

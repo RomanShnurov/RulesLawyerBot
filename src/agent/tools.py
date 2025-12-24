@@ -74,31 +74,13 @@ def search_filenames(query: str) -> str:
         return f"Found {len(matches)} file(s):\n" + "\n".join(matches)
 
 
-@function_tool
-@safe_execution
-async def search_inside_file_ugrep(
+async def _search_inside_file_ugrep_impl(
     filename: str, keywords: str, fuzzy: bool = False
 ) -> str:
-    """Search inside a PDF file using ugrep with Boolean pattern support.
+    """Internal implementation of ugrep search.
 
-    Args:
-        filename: Name of the PDF file (must exist in rules_pdfs/)
-        keywords: Search keywords with Boolean logic support:
-                  - Space-separated terms use AND: "attack armor" finds both
-                  - Pipe | means OR: "move|teleport" finds either
-                  - Dash - means NOT: "attack -ranged" excludes ranged
-                  - Combine: "attack|strike armor -magic"
-                  - Quotes for exact phrases: '"end of turn"'
-        fuzzy: Enable fuzzy matching to handle typos (default: False)
-
-    Returns:
-        Matching text snippets with context or error message
-
-    Examples:
-        search_inside_file_ugrep("game.pdf", "combat damage")
-        search_inside_file_ugrep("game.pdf", "move|teleport enemy")
-        search_inside_file_ugrep("game.pdf", "attack -ranged")
-        search_inside_file_ugrep("game.pdf", "movment", fuzzy=True)
+    This is the actual search logic, separated from the @function_tool wrapper
+    so it can be called directly by other functions like parallel_search_terms.
     """
     with ScopeTimer(f"search_inside_file_ugrep('{filename}', '{keywords}')"):
         pdf_path = Path(settings.pdf_storage_path) / filename
@@ -156,6 +138,35 @@ async def search_inside_file_ugrep(
 
 @function_tool
 @safe_execution
+async def search_inside_file_ugrep(
+    filename: str, keywords: str, fuzzy: bool = False
+) -> str:
+    """Search inside a PDF file using ugrep with Boolean pattern support.
+
+    Args:
+        filename: Name of the PDF file (must exist in rules_pdfs/)
+        keywords: Search keywords with Boolean logic support:
+                  - Space-separated terms use AND: "attack armor" finds both
+                  - Pipe | means OR: "move|teleport" finds either
+                  - Dash - means NOT: "attack -ranged" excludes ranged
+                  - Combine: "attack|strike armor -magic"
+                  - Quotes for exact phrases: '"end of turn"'
+        fuzzy: Enable fuzzy matching to handle typos (default: False)
+
+    Returns:
+        Matching text snippets with context or error message
+
+    Examples:
+        search_inside_file_ugrep("game.pdf", "combat damage")
+        search_inside_file_ugrep("game.pdf", "move|teleport enemy")
+        search_inside_file_ugrep("game.pdf", "attack -ranged")
+        search_inside_file_ugrep("game.pdf", "movment", fuzzy=True)
+    """
+    return await _search_inside_file_ugrep_impl(filename, keywords, fuzzy)
+
+
+@function_tool
+@safe_execution
 async def parallel_search_terms(filename: str, terms: list[str], fuzzy: bool = False) -> str:
     """Search for multiple terms in parallel within a PDF file.
 
@@ -193,9 +204,10 @@ async def parallel_search_terms(filename: str, terms: list[str], fuzzy: bool = F
 
         logger.info(f"Launching {len(terms)} parallel searches in '{filename}'")
 
-        # Launch all searches in parallel
+        # Launch all searches in parallel using the internal implementation
+        # (not the @function_tool wrapper which isn't directly callable)
         tasks = [
-            search_inside_file_ugrep(filename, term, fuzzy=fuzzy)
+            _search_inside_file_ugrep_impl(filename, term, fuzzy=fuzzy)
             for term in terms
         ]
 
