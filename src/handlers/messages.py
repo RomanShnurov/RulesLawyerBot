@@ -5,6 +5,7 @@ and streaming progress updates.
 """
 
 import json
+import re
 
 from agents import Runner
 from telegram import Update
@@ -20,6 +21,51 @@ from src.utils.logger import logger
 from src.utils.progress_reporter import ProgressReporter
 from src.utils.safety import rate_limiter, ugrep_semaphore
 from src.utils.telegram_helpers import send_long_message
+
+# Blocklist patterns to prevent prompt injection and off-topic abuse
+# Case-insensitive matching
+BLOCKLIST_PATTERNS: list[str] = [
+    # Prompt injection attempts
+    r"ignore\s+(all\s+|previous\s+)?instructions",
+    r"forget\s+(your\s+)?(all\s+|previous\s+)?instructions",
+    r"disregard\s+(all\s+|previous\s+)?instructions",
+    r"new\s+instructions",
+    r"system\s*prompt",
+    r"you\s+are\s+now",
+    r"act\s+as\s+(a\s+)?(?!rules)",  # "act as" but not "act as rules lawyer"
+    r"pretend\s+(to\s+be|you\s+are)",
+    r"roleplay\s+as",
+    # Requests to write code
+    r"(write|generate|create)\s+(me\s+)?(a\s+)?(python|code|script|program)",
+    r"напиши\s+(мне\s+)?(код|скрипт|программу)",
+    # Jailbreak attempts
+    r"dan\s+mode",
+    r"jailbreak",
+    r"bypass\s+(restrictions|filters|rules)",
+]
+
+# Compile patterns for performance
+_BLOCKLIST_REGEX = re.compile(
+    "|".join(f"({p})" for p in BLOCKLIST_PATTERNS),
+    re.IGNORECASE
+)
+
+BLOCKLIST_RESPONSE = (
+    "🎲 Я — помощник по правилам настольных игр. "
+    "Задайте вопрос о правилах какой-нибудь игры!"
+)
+
+
+def _check_blocklist(text: str) -> bool:
+    """Check if text matches any blocklist pattern.
+
+    Args:
+        text: User message text
+
+    Returns:
+        True if message should be blocked, False otherwise
+    """
+    return bool(_BLOCKLIST_REGEX.search(text))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -64,6 +110,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     allowed, rate_limit_msg = await rate_limiter.check_rate_limit(user.id)
     if not allowed:
         await update.message.reply_text(f"⏳ {rate_limit_msg}")
+        return
+
+    # Check blocklist patterns (prompt injection, off-topic)
+    if _check_blocklist(message_text):
+        logger.warning(f"Blocklist triggered for user {user.id}: {message_text[:50]}...")
+        await update.message.reply_text(BLOCKLIST_RESPONSE)
         return
 
     # Get conversation state
