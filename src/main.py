@@ -46,6 +46,15 @@ def main() -> None:
     logger.info(f"OpenAI Model: {settings.openai_model}")
     logger.info(f"PDF Storage: {settings.pdf_storage_path}")
 
+    # Initialize Langfuse observability (must be done BEFORE agent creation)
+    from src.utils.observability import setup_langfuse_instrumentation
+
+    tracing_enabled = setup_langfuse_instrumentation()
+    if tracing_enabled:
+        logger.info("🔍 Langfuse observability enabled")
+    else:
+        logger.info("🔍 Langfuse observability disabled")
+
     # Build application
     application = ApplicationBuilder().token(settings.telegram_token).build()
 

@@ -6,7 +6,7 @@ objects that include the full reasoning chain.
 """
 from pathlib import Path
 
-from agents import Agent, OpenAIChatCompletionsModel, SQLiteSession, set_tracing_disabled
+from agents import Agent, OpenAIChatCompletionsModel, SQLiteSession
 from openai import AsyncOpenAI
 
 from src.agent.schemas import PipelineOutput
@@ -20,8 +20,7 @@ from src.agent.tools import (
 from src.config import settings
 from src.utils.logger import logger
 
-# Disable tracing for production
-set_tracing_disabled(disabled=True)
+# Tracing is now controlled by Langfuse instrumentation (see src/main.py)
 
 
 def create_agent() -> Agent:

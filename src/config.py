@@ -56,6 +56,28 @@ class Settings(BaseSettings):
         description="Logging level (DEBUG, INFO, WARNING, ERROR)"
     )
 
+    # Langfuse Observability
+    langfuse_public_key: str = Field(
+        default="",
+        description="Langfuse public API key (optional)"
+    )
+    langfuse_secret_key: str = Field(
+        default="",
+        description="Langfuse secret API key (optional)"
+    )
+    langfuse_base_url: str = Field(
+        default="https://cloud.langfuse.com",
+        description="Langfuse API base URL"
+    )
+    enable_tracing: bool = Field(
+        default=False,
+        description="Enable OpenTelemetry tracing to Langfuse"
+    )
+    langfuse_environment: str = Field(
+        default="production",
+        description="Environment name for Langfuse traces"
+    )
+
     @property
     def session_db_dir(self) -> str:
         """Directory for per-user session databases."""
@@ -70,6 +92,15 @@ class Settings(BaseSettings):
             return [int(uid.strip()) for uid in self.admin_user_ids.split(",") if uid.strip()]
         except ValueError:
             return []
+
+    @property
+    def tracing_enabled(self) -> bool:
+        """Check if tracing should be enabled."""
+        return (
+            self.enable_tracing
+            and bool(self.langfuse_public_key.strip())
+            and bool(self.langfuse_secret_key.strip())
+        )
 
 
 # Global settings instance

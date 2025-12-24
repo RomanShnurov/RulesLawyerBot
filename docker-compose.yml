@@ -18,6 +18,12 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-10}
       - MAX_CONCURRENT_SEARCHES=${MAX_CONCURRENT_SEARCHES:-4}
+      # Langfuse observability
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      - ENABLE_TRACING=${ENABLE_TRACING:-false}
+      - LANGFUSE_ENVIRONMENT=${LANGFUSE_ENVIRONMENT:-production}
 
     volumes:
       - ./rules_pdfs:/app/rules_pdfs

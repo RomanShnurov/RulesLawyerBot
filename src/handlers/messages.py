@@ -41,6 +41,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info(f"User {user.id}: {message_text[:100]}")
 
+    # Add user context to OpenTelemetry traces
+    if settings.tracing_enabled:
+        try:
+            from opentelemetry import trace
+            from src.utils.observability import get_trace_context_for_user
+
+            span = trace.get_current_span()
+            if span.is_recording():
+                for key, value in get_trace_context_for_user(user.id, user.username).items():
+                    span.set_attribute(key, value)
+        except Exception as e:
+            logger.debug(f"Failed to add user context: {e}")
+
     # Check rate limit
     allowed, rate_limit_msg = await rate_limiter.check_rate_limit(user.id)
     if not allowed:
@@ -193,6 +206,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await send_long_message(
                 bot=context.bot, chat_id=update.effective_chat.id, text=response_text
             )
+
+        # Send trace URL to admin users for debugging
+        if settings.admin_ids and user.id in settings.admin_ids and settings.tracing_enabled:
+            try:
+                from opentelemetry import trace
+                from src.utils.observability import create_trace_url
+
+                span = trace.get_current_span()
+                if span.is_recording():
+                    trace_id = format(span.get_span_context().trace_id, '032x')
+                    trace_url = create_trace_url(trace_id)
+                    if trace_url:
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=f"🔍 Debug trace: {trace_url}",
+                            disable_web_page_preview=True,
+                        )
+            except Exception as e:
+                logger.debug(f"Failed to send trace URL: {e}")
 
     except Exception:
         # Clean up progress message on error
