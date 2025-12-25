@@ -7,8 +7,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from src.agent.schemas import ActionType, PipelineOutput
-from src.config import settings
-from src.formatters.sgr import format_reasoned_answer, log_reasoning_chain
 from src.pipeline.state import get_conversation_state
 from src.utils.conversation_state import ConversationStage
 from src.utils.logger import logger
@@ -142,15 +140,31 @@ async def handle_pipeline_output(
                 f"[Pipeline] Set game context: {output.game_identification.identified_game}"
             )
 
-        # Use existing format_reasoned_answer function
-        # Verbose output only for admins
-        is_admin = settings.admin_ids and user_id in settings.admin_ids
-        response_text = format_reasoned_answer(
-            output.final_answer,
-            verbose=is_admin,
-        )
+        # Format final answer for display
+        parts = [output.final_answer.answer]
 
-        log_reasoning_chain(user_id, output.final_answer)
+        # Add confidence indicator if low confidence
+        if output.final_answer.confidence < 0.8:
+            conf_emoji = "⚠️" if output.final_answer.confidence >= 0.5 else "❓"
+            parts.append(
+                f"\n{conf_emoji} Уверенность: {output.final_answer.confidence:.0%}"
+            )
+
+        # Add limitations if any
+        if output.final_answer.limitations:
+            limitations_text = "; ".join(output.final_answer.limitations)
+            parts.append(f"\n⚠️ *Ограничения:* {limitations_text}")
+
+        # Add suggestions for follow-up questions
+        if output.final_answer.suggestions:
+            suggestions_text = " • ".join(output.final_answer.suggestions[:3])
+            parts.append(f"\n💡 *См. также:* {suggestions_text}")
+
+        response_text = "\n".join(parts)
+
+        logger.info(
+            f"[Pipeline] Final answer sent (confidence: {output.final_answer.confidence:.0%})"
+        )
 
         await send_long_message(
             bot=context.bot,

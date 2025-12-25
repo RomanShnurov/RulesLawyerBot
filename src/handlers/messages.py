@@ -12,9 +12,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from src.agent.definition import get_user_session, rules_agent
-from src.agent.schemas import PipelineOutput, ReasonedAnswer
+from src.agent.schemas import PipelineOutput
 from src.config import settings
-from src.formatters.sgr import format_reasoned_answer, log_reasoning_chain
 from src.pipeline.handler import handle_pipeline_output
 from src.pipeline.state import get_conversation_state
 from src.utils.logger import logger
@@ -87,217 +86,209 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info(f"User {user.id}: {message_text[:100]}")
 
-    # Add user context and input to OpenTelemetry traces
+    # Create root span for Langfuse trace with input/output
     # See: https://langfuse.com/faq/all/empty-trace-input-and-output
-    trace_span = None
+    tracer = None
     if settings.tracing_enabled:
         try:
-            from opentelemetry import trace
-            from src.utils.observability import get_trace_context_for_user
-
-            trace_span = trace.get_current_span()
-            if trace_span.is_recording():
-                for key, value in get_trace_context_for_user(user.id, user.username).items():
-                    trace_span.set_attribute(key, value)
-                # Set input for Langfuse trace visibility
-                trace_span.set_attribute("input.value", message_text)
-                # Set session ID for Langfuse session grouping (chat_id groups conversation)
-                trace_span.set_attribute("langfuse.session.id", str(update.effective_chat.id))
+            from opentelemetry import trace as otel_trace
+            tracer = otel_trace.get_tracer(__name__)
         except Exception as e:
-            logger.debug(f"Failed to add trace context: {e}")
+            logger.debug(f"Failed to initialize tracer: {e}")
 
-    # Check rate limit
+    # Check rate limit (outside trace to avoid unnecessary spans)
     allowed, rate_limit_msg = await rate_limiter.check_rate_limit(user.id)
     if not allowed:
         await update.message.reply_text(f"⏳ {rate_limit_msg}")
         return
 
-    # Check blocklist patterns (prompt injection, off-topic)
+    # Check blocklist patterns (outside trace to avoid unnecessary spans)
     if _check_blocklist(message_text):
         logger.warning(f"Blocklist triggered for user {user.id}: {message_text[:50]}...")
         await update.message.reply_text(BLOCKLIST_RESPONSE)
         return
 
-    # Get conversation state
-    conv_state = get_conversation_state(context, user.id)
+    # Helper to run the main processing logic
+    async def _process_message():
+        """Main processing logic wrapped in root span for Langfuse tracing."""
+        # Get conversation state
+        conv_state = get_conversation_state(context, user.id)
 
-    # Build context-aware input for agent
-    agent_input = message_text
+        # Build context-aware input for agent
+        agent_input = message_text
 
-    # Inject game context if available
-    if conv_state.has_game_context():
-        agent_input = (
-            f"[Context: Current game is '{conv_state.current_game}', "
-            f"PDF: '{conv_state.current_pdf}']\n\n"
-            f"User question: {message_text}"
-        )
-        logger.debug(
-            f"[Pipeline] Injected game context: {conv_state.current_game}"
-        )
-
-    # Send typing indicator
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id, action="typing"
-    )
-
-    # Create progress reporter for streaming updates
-    progress = ProgressReporter(context.bot, update.effective_chat.id)
-
-    try:
-        # Get user-specific session
-        logger.debug(f"[Perf] Getting session for user {user.id}")
-        session = get_user_session(user.id)
-        logger.debug("[Perf] Session loaded, starting agent run")
-
-        # Run agent with streaming to show progress
-        async with ugrep_semaphore:
-            logger.debug("[Perf] Acquired ugrep semaphore, calling Runner.run_streamed")
-            result = Runner.run_streamed(
-                starting_agent=rules_agent, input=agent_input, session=session
+        # Inject game context if available
+        if conv_state.has_game_context():
+            agent_input = (
+                f"[Context: Current game is '{conv_state.current_game}', "
+                f"PDF: '{conv_state.current_pdf}']\n\n"
+                f"User question: {message_text}"
             )
-            logger.debug("[Perf] Runner.run_streamed returned, waiting for first event")
+            logger.debug(
+                f"[Pipeline] Injected game context: {conv_state.current_game}"
+            )
 
-            # Process streaming events
-            event_count = 0
-            async for event in result.stream_events():
-                event_count += 1
-                if event_count == 1:
-                    logger.debug(f"[Perf] First event received: {event.type}")
+        # Send typing indicator
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
 
-                if event.type == "run_item_stream_event":
-                    item = event.item
-                    if item.type == "tool_call_item":
-                        # Extract tool name and arguments
-                        tool_name = getattr(item, "name", None)
-                        if tool_name is None and hasattr(item, "raw_item"):
-                            tool_name = getattr(item.raw_item, "name", "unknown")
+        # Create progress reporter for streaming updates
+        progress = ProgressReporter(context.bot, update.effective_chat.id)
 
-                        # Extract arguments if available
-                        args = None
-                        if hasattr(item, "raw_item") and hasattr(item.raw_item, "arguments"):
-                            try:
-                                args = json.loads(item.raw_item.arguments)
-                            except (json.JSONDecodeError, TypeError):
-                                pass
+        try:
+            # Get user-specific session
+            logger.debug(f"[Perf] Getting session for user {user.id}")
+            session = get_user_session(user.id)
+            logger.debug("[Perf] Session loaded, starting agent run")
 
-                        logger.debug(f"[Perf] Tool call event received: {tool_name}")
-                        await progress.report_tool_call(tool_name, args)
-                        logger.debug(f"Tool called: {tool_name}")
+            # Run agent with streaming to show progress
+            async with ugrep_semaphore:
+                logger.debug("[Perf] Acquired ugrep semaphore, calling Runner.run_streamed")
+                result = Runner.run_streamed(
+                    starting_agent=rules_agent, input=agent_input, session=session
+                )
+                logger.debug("[Perf] Runner.run_streamed returned, waiting for first event")
 
-        # Force final update before response
-        await progress.force_update()
+                # Process streaming events
+                event_count = 0
+                async for event in result.stream_events():
+                    event_count += 1
+                    if event_count == 1:
+                        logger.debug(f"[Perf] First event received: {event.type}")
 
-        # Log execution details
-        logger.debug(f"Agent steps: {len(result.new_items)}")
-        for i, step in enumerate(result.new_items, 1):
-            # Pretty-print structured outputs, show summary for others
-            if hasattr(step, "raw_item") and hasattr(step.raw_item, "content"):
-                # Extract just the text content from message outputs
-                content = step.raw_item.content
-                if isinstance(content, list) and len(content) > 0:
-                    text_content = (
-                        content[0].text
-                        if hasattr(content[0], "text")
-                        else str(content[0])
-                    )
-                    # Pretty-print JSON if it's parseable
-                    try:
-                        parsed = json.loads(text_content)
-                        logger.debug(
-                            f"  Step {i}: {step.type}: "
-                            f"{step.raw_item.model_dump_json(indent=2, ensure_ascii=False)}"
+                    if event.type == "run_item_stream_event":
+                        item = event.item
+                        if item.type == "tool_call_item":
+                            # Extract tool name and arguments
+                            tool_name = getattr(item, "name", None)
+                            if tool_name is None and hasattr(item, "raw_item"):
+                                tool_name = getattr(item.raw_item, "name", "unknown")
+
+                            # Extract arguments if available
+                            args = None
+                            if hasattr(item, "raw_item") and hasattr(item.raw_item, "arguments"):
+                                try:
+                                    args = json.loads(item.raw_item.arguments)
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+
+                            logger.debug(f"[Perf] Tool call event received: {tool_name}")
+                            await progress.report_tool_call(tool_name, args)
+                            logger.debug(f"Tool called: {tool_name}")
+
+            # Force final update before response
+            await progress.force_update()
+
+            # Log execution details
+            logger.debug(f"Agent steps: {len(result.new_items)}")
+            for i, step in enumerate(result.new_items, 1):
+                # Pretty-print structured outputs, show summary for others
+                if hasattr(step, "raw_item") and hasattr(step.raw_item, "content"):
+                    # Extract just the text content from message outputs
+                    content = step.raw_item.content
+                    if isinstance(content, list) and len(content) > 0:
+                        text_content = (
+                            content[0].text
+                            if hasattr(content[0], "text")
+                            else str(content[0])
                         )
-                        logger.debug(
-                            f"    Output (formatted):\n"
-                            f"{json.dumps(parsed, indent=2, ensure_ascii=False)}"
-                        )
-                    except (json.JSONDecodeError, AttributeError):
-                        # Not JSON, log first 200 chars
-                        preview = (
-                            text_content[:200] + "..."
-                            if len(text_content) > 200
-                            else text_content
-                        )
-                        logger.debug(f"  Step {i}: {step.type} - {preview}")
+                        # Pretty-print JSON if it's parseable
+                        try:
+                            parsed = json.loads(text_content)
+                            logger.debug(
+                                f"  Step {i}: {step.type}: "
+                                f"{step.raw_item.model_dump_json(indent=2, ensure_ascii=False)}"
+                            )
+                            logger.debug(
+                                f"    Output (formatted):\n"
+                                f"{json.dumps(parsed, indent=2, ensure_ascii=False)}"
+                            )
+                        except (json.JSONDecodeError, AttributeError):
+                            # Not JSON, log first 200 chars
+                            preview = (
+                                text_content[:200] + "..."
+                                if len(text_content) > 200
+                                else text_content
+                            )
+                            logger.debug(f"  Step {i}: {step.type} - {preview}")
+                    else:
+                        logger.debug(f"  Step {i}: {step.type}")
                 else:
-                    logger.debug(f"  Step {i}: {step.type}")
+                    # For other step types, show summary
+                    logger.debug(f"  Step {i}: {type(step).__name__}")
+
+            # Handle multi-stage pipeline output
+            if isinstance(result.final_output, PipelineOutput):
+                # Delete progress message before sending response
+                await progress.finalize()
+                await handle_pipeline_output(
+                    result.final_output, update, context, user.id
+                )
+                # Return structured output for trace
+                return result.final_output.model_dump_json(ensure_ascii=False)
             else:
-                # For other step types, show summary
-                logger.debug(f"  Step {i}: {type(step).__name__}")
+                # Fallback for non-structured output
+                response_text = (
+                    str(result.final_output)
+                    if result.final_output
+                    else "No response generated"
+                )
+                logger.warning(
+                    f"Non-structured output received: {type(result.final_output)}"
+                )
 
-        # Handle multi-stage pipeline output
-        if isinstance(result.final_output, PipelineOutput):
-            # Set output for Langfuse trace visibility
-            if trace_span and trace_span.is_recording():
-                try:
-                    trace_span.set_attribute(
-                        "output.value",
-                        result.final_output.model_dump_json(ensure_ascii=False)
-                    )
-                except Exception:
-                    pass
-            # Delete progress message before sending response
+                # Delete progress message before sending response
+                await progress.finalize()
+                await send_long_message(
+                    bot=context.bot, chat_id=update.effective_chat.id, text=response_text
+                )
+                # Return text output for trace
+                return response_text
+
+        except Exception as e:
+            # Clean up progress message on error
             await progress.finalize()
-            await handle_pipeline_output(
-                result.final_output, update, context, user.id
-            )
-        elif isinstance(result.final_output, ReasonedAnswer):
-            # Backward compatibility: handle old ReasonedAnswer format
-            log_reasoning_chain(user.id, result.final_output)
+            logger.exception(f"Error handling message from user {user.id}")
 
-            # Verbose output only for admins
-            is_admin = settings.admin_ids and user.id in settings.admin_ids
-
-            response_text = format_reasoned_answer(
-                result.final_output,
-                verbose=is_admin,
+            error_message = (
+                "❌ An error occurred while processing your request. "
+                "Please try again or contact support."
             )
 
-            # Set output for Langfuse trace visibility
-            if trace_span and trace_span.is_recording():
+            await update.message.reply_text(error_message)
+            # Return error for trace
+            return f"Error: {e}"
+
+    # Run with root span for Langfuse tracing
+    if tracer is not None:
+        # Create root span with user context
+        from src.utils.observability import get_trace_context_for_user
+
+        trace_attrs = get_trace_context_for_user(user.id, user.username)
+        # Add session ID for Langfuse session grouping
+        trace_attrs["langfuse.session.id"] = str(update.effective_chat.id)
+        # Set input at trace level (required for Langfuse)
+        trace_attrs["input"] = message_text
+
+        with tracer.start_as_current_span(
+            "telegram_message_handler",
+            attributes=trace_attrs
+        ) as root_span:
+            # Run processing and get output
+            output = await _process_message()
+
+            # Set output at trace level (required for Langfuse)
+            if root_span.is_recording():
+                root_span.set_attribute("output", output)
+
+            # Send trace URL to admin users for debugging
+            if settings.admin_ids and user.id in settings.admin_ids:
                 try:
-                    trace_span.set_attribute("output.value", response_text)
-                except Exception:
-                    pass
+                    from opentelemetry import trace as otel_trace
+                    from src.utils.observability import create_trace_url
 
-            # Delete progress message before sending response
-            await progress.finalize()
-            await send_long_message(
-                bot=context.bot, chat_id=update.effective_chat.id, text=response_text
-            )
-        else:
-            # Fallback for non-structured output
-            response_text = (
-                str(result.final_output)
-                if result.final_output
-                else "No response generated"
-            )
-            logger.warning(
-                f"Non-structured output received: {type(result.final_output)}"
-            )
-
-            # Set output for Langfuse trace visibility
-            if trace_span and trace_span.is_recording():
-                try:
-                    trace_span.set_attribute("output.value", response_text)
-                except Exception:
-                    pass
-
-            # Delete progress message before sending response
-            await progress.finalize()
-            await send_long_message(
-                bot=context.bot, chat_id=update.effective_chat.id, text=response_text
-            )
-
-        # Send trace URL to admin users for debugging
-        if settings.admin_ids and user.id in settings.admin_ids and settings.tracing_enabled:
-            try:
-                from opentelemetry import trace
-                from src.utils.observability import create_trace_url
-
-                span = trace.get_current_span()
-                if span.is_recording():
-                    trace_id = format(span.get_span_context().trace_id, '032x')
+                    trace_id = format(root_span.get_span_context().trace_id, '032x')
                     trace_url = create_trace_url(trace_id)
                     if trace_url:
                         await context.bot.send_message(
@@ -305,24 +296,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             text=f"🔍 Debug trace: {trace_url}",
                             disable_web_page_preview=True,
                         )
-            except Exception as e:
-                logger.debug(f"Failed to send trace URL: {e}")
-
-    except Exception as e:
-        # Clean up progress message on error
-        await progress.finalize()
-        logger.exception(f"Error handling message from user {user.id}")
-
-        error_message = (
-            "❌ An error occurred while processing your request. "
-            "Please try again or contact support."
-        )
-
-        # Set error output for Langfuse trace visibility
-        if trace_span and trace_span.is_recording():
-            try:
-                trace_span.set_attribute("output.value", f"Error: {e}")
-            except Exception:
-                pass
-
-        await update.message.reply_text(error_message)
+                except Exception as e:
+                    logger.debug(f"Failed to send trace URL: {e}")
+    else:
+        # No tracing, run directly
+        await _process_message()

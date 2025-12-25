@@ -7,11 +7,7 @@ from src.agent.schemas import (
     ActionType,
     PipelineOutput,
     GameIdentification,
-    ReasonedAnswer,
-    QueryAnalysis,
-    QueryType,
-    SearchPlan,
-    SearchResultAnalysis,
+    FinalAnswer,
 )
 
 
@@ -78,30 +74,11 @@ async def test_pipeline_output_final_answer():
     mock_context.user_data = {}
 
     # Create a proper PipelineOutput with final_answer
-    final_answer = ReasonedAnswer(
-        query_analysis=QueryAnalysis(
-            original_question="How does attack work?",
-            interpreted_question="Attack mechanics in Gloomhaven",
-            query_type=QueryType.PROCEDURAL,
-            game_name="Gloomhaven",
-            primary_concepts=["attack"],
-            language_detected="en",
-            reasoning="Test",
-        ),
-        search_plan=SearchPlan(
-            target_file="Gloomhaven.pdf",
-            search_terms=["attack"],
-            search_strategy="exact_match",
-            reasoning="Test",
-        ),
-        primary_search_result=SearchResultAnalysis(
-            search_term="attack",
-            found=True,
-            completeness_score=0.9,
-            reasoning="Found attack rules",
-        ),
-        answer="Attack works by...",
+    final_answer = FinalAnswer(
+        answer="📖 Attack works by rolling dice and comparing values.\n\n📍 Section: Combat, Page 12",
         confidence=0.9,
+        limitations=["This is a test answer"],
+        suggestions=["How does defense work?", "What are attack modifiers?"],
     )
 
     pipeline_output = PipelineOutput(

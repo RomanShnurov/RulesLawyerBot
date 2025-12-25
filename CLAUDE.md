@@ -94,7 +94,7 @@ src/
   - `read_full_document(filename)`: Fallback PDF reader (pypdf)
 - **schemas.py**: Pydantic models for structured outputs
   - `PipelineOutput`: Multi-stage pipeline with `ActionType` discriminator
-  - `ReasonedAnswer`: SGR output with full reasoning chain
+  - `FinalAnswer`: Simplified final answer with formatted text and metadata
   - `GameIdentification`, `SearchProgress`: Pipeline stage schemas
 
 **3. Multi-Stage Pipeline (src/pipeline/)**
@@ -115,13 +115,7 @@ src/
 - **callbacks.py**: Inline button handlers
   - `handle_game_selection()`: Process game selection from inline keyboard
 
-**5. Output Formatters (src/formatters/)**
-- **sgr.py**: Schema-Guided Reasoning formatting
-  - `format_reasoned_answer()`: Formats `ReasonedAnswer` for Telegram
-  - `log_reasoning_chain()`: Logs full reasoning for debugging
-  - Verbose mode for admins shows complete reasoning chain
-
-**6. Utilities (src/utils/)**
+**5. Utilities (src/utils/)**
 - **logger.py**: Dual output (console + file), UTF-8 encoding
 - **timer.py**: `ScopeTimer` context manager for performance monitoring
 - **safety.py**: `rate_limiter` (per-user), `ugrep_semaphore` (concurrent search control)
@@ -187,17 +181,17 @@ The agent has **specialized multilingual search logic** (src/agent/definition.py
    - Example: "movement" → `перемещ|движен|ход|бег`
    - Example: "attack" → `атак|удар|бой|сраж`
 
-3. **Schema-Guided Reasoning (SGR)**:
-   - Agent outputs structured `PipelineOutput` or `ReasonedAnswer`
-   - Complete reasoning chain captured in schemas
-   - Transparent decision-making with confidence scores
+3. **Structured Pipeline Outputs**:
+   - Agent outputs structured `PipelineOutput` with multi-stage routing
+   - Final answers include confidence scores and metadata
+   - Transparent decision-making via `ActionType` discriminator
 
 4. **Mandatory Tool Calling Workflow**:
    - Agent MUST call tools before outputting structured response
    - Sequence: `list_directory_tree()` → `search_filenames()` → `search_inside_file_ugrep()`
    - Instructions explicitly forbid predicting/guessing tool results
 
-**IMPORTANT**: The Schema-Guided Reasoning (SGR) pattern with structured outputs requires a capable model. Small/fast models (like `gpt-3.5-turbo` or lightweight alternatives) may skip tool calls and predict results. **Recommended models**: `gpt-4o`, `gpt-4-turbo`, or `gpt-4` for reliable tool calling behavior.
+**IMPORTANT**: The structured output pattern requires a capable model. Small/fast models (like `gpt-3.5-turbo` or lightweight alternatives) may skip tool calls and predict results. **Recommended models**: `gpt-4o`, `gpt-4-turbo`, or `gpt-4` for reliable tool calling behavior.
 
 ## Configuration
 

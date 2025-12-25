@@ -1,8 +1,8 @@
 """OpenAI Agent definition and session management.
 
-This module implements Schema-Guided Reasoning (SGR) for transparent,
-auditable agent responses. The agent outputs structured ReasonedAnswer
-objects that include the full reasoning chain.
+This module implements a multi-stage conversational pipeline with
+structured outputs. The agent uses PipelineOutput to route responses
+based on conversation state (clarification, game selection, or final answer).
 """
 from pathlib import Path
 
@@ -260,7 +260,7 @@ With game and file identified:
 
 When you have sufficient information:
 1. Set action_type="final_answer"
-2. Populate final_answer with complete ReasonedAnswer schema
+2. Populate final_answer with FinalAnswer schema (pre-formatted text)
 3. **CRITICAL: Format answer to prioritize direct quotes from rules:**
    - Start with direct quote(s) from the rulebook
    - Include section name and page number
@@ -421,11 +421,11 @@ available games, then populate `options` with the game names found!
 5. Populate game_identification when game is known (even from context)
 6. **ANSWER FORMAT - CRITICAL:**
    - Players need DIRECT QUOTES from rules, not paraphrases
-   - Start answer with quoted text from `relevant_excerpts`
-   - Always include section name and page number from `page_references`
+   - Start answer with quoted text from search results
+   - Always include section name and page number from search results
    - Add brief explanation ONLY if quote needs clarification
    - Detailed explanation is optional - offer it at the end with "Нужно более подробное объяснение?"
-   - Use `relevant_excerpts` from SearchResultAnalysis as the main content
+   - Use relevant text excerpts from ugrep results as the main content
    - Quote must be in quotation marks ("")
 """.strip()
 

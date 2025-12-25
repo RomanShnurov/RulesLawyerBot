@@ -61,6 +61,7 @@ def setup_langfuse_instrumentation() -> bool:
         logfire.configure(
             service_name="RulesLawyerBot",
             send_to_logfire=False,  # Don't send to Logfire cloud
+            console=False,  # Disable console output for traces
             additional_span_processors=[_span_processor],
         )
 
@@ -82,18 +83,41 @@ def setup_langfuse_instrumentation() -> bool:
 
 
 def get_trace_context_for_user(user_id: int, username: Optional[str] = None) -> dict:
-    """Get OpenTelemetry span attributes for user context."""
+    """Get OpenTelemetry span attributes for user context.
+
+    Sets both OpenTelemetry standard attributes and Langfuse-specific attributes
+    for better user tracking and filtering in Langfuse UI.
+
+    Args:
+        user_id: Telegram user ID
+        username: Optional Telegram username
+
+    Returns:
+        Dictionary of OpenTelemetry span attributes
+    """
     attrs = {
+        # OpenTelemetry standard attributes
         "user.id": str(user_id),
         "user.telegram_id": user_id,
+        # Langfuse-specific user attributes (for Langfuse UI filtering)
+        "langfuse.user.id": str(user_id),
     }
     if username:
         attrs["user.username"] = username
+        # Langfuse-specific user name
+        attrs["langfuse.user.name"] = username
     return attrs
 
 
 def create_trace_url(trace_id: Optional[str] = None) -> Optional[str]:
-    """Generate Langfuse UI URL for a specific trace."""
+    """Generate Langfuse UI URL for a specific trace.
+
+    Args:
+        trace_id: OpenTelemetry trace ID (32-character hex string)
+
+    Returns:
+        Langfuse trace URL or None if tracing is disabled
+    """
     if not settings.tracing_enabled or not trace_id:
         return None
     return f"{settings.langfuse_base_url}/traces/{trace_id}"

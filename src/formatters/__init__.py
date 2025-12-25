@@ -1,8 +1,5 @@
-"""Output formatters for Telegram bot responses."""
+"""Output formatters for Telegram bot responses.
 
-from src.formatters.sgr import format_reasoned_answer, log_reasoning_chain
-
-__all__ = [
-    "format_reasoned_answer",
-    "log_reasoning_chain",
-]
+This module is kept for backwards compatibility but currently empty.
+Formatting is now done inline in pipeline handlers.
+"""

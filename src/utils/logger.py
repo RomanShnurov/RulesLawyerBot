@@ -45,6 +45,12 @@ def setup_logging() -> logging.Logger:
     logging.getLogger("telegram").setLevel(logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
+    # Suppress OpenTelemetry/Logfire trace logs
+    logging.getLogger("logfire").setLevel(logging.WARNING)
+    logging.getLogger("opentelemetry").setLevel(logging.WARNING)
+    logging.getLogger("opentelemetry.sdk.trace").setLevel(logging.WARNING)
+    logging.getLogger("opentelemetry.exporter").setLevel(logging.WARNING)
+
     return logger
 
 
