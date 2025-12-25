@@ -281,23 +281,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Set output at trace level (required for Langfuse)
             if root_span.is_recording():
                 root_span.set_attribute("output", output)
-
-            # Send trace URL to admin users for debugging
-            if settings.admin_ids and user.id in settings.admin_ids:
-                try:
-                    from opentelemetry import trace as otel_trace
-                    from src.rules_lawyer_bot.utils.observability import create_trace_url
-
-                    trace_id = format(root_span.get_span_context().trace_id, '032x')
-                    trace_url = create_trace_url(trace_id)
-                    if trace_url:
-                        await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
-                            text=f"🔍 Debug trace: {trace_url}",
-                            disable_web_page_preview=True,
-                        )
-                except Exception as e:
-                    logger.debug(f"Failed to send trace URL: {e}")
     else:
         # No tracing, run directly
         await _process_message()

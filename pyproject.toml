@@ -1,6 +1,7 @@
 [project]
 name = "ruleslawyerbot"
 version = "0.1.0"
+license = {text = "MIT"}
 description = "🎲 Telegram bot that acts as a board game rules referee using OpenAI Agents SDK with multi-stage conversational pipeline, multilingual PDF search, and inline UI for answering game rules questions"
 readme = "README.md"
 requires-python = ">=3.13"
