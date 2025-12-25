@@ -1,7 +1,7 @@
 """Telegram-specific utility functions."""
 from telegram import Bot
 
-from src.utils.logger import logger
+from src.rules_lawyer_bot.utils.logger import logger
 
 
 async def send_long_message(

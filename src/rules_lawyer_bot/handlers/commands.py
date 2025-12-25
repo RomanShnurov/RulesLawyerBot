@@ -8,9 +8,9 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from src.config import settings
-from src.utils.logger import logger
-from src.utils.telegram_helpers import send_long_message
+from src.rules_lawyer_bot.config import settings
+from src.rules_lawyer_bot.utils.logger import logger
+from src.rules_lawyer_bot.utils.telegram_helpers import send_long_message
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

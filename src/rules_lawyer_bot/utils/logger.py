@@ -4,7 +4,7 @@ import logging
 import sys
 from pathlib import Path
 
-from src.config import settings
+from src.rules_lawyer_bot.config import settings
 
 
 def setup_logging() -> logging.Logger:

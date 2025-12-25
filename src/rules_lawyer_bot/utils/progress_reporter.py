@@ -10,7 +10,7 @@ from typing import Optional
 
 from telegram import Bot, Message
 
-from src.utils.logger import logger
+from src.rules_lawyer_bot.utils.logger import logger
 
 
 TOOL_STATUS_MESSAGES = {

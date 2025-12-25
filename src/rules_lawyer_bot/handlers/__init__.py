@@ -1,6 +1,6 @@
 """Telegram bot handlers."""
 
-from src.handlers import callbacks, commands, messages
+from src.rules_lawyer_bot.handlers import callbacks, commands, messages
 
 __all__ = [
     "callbacks",

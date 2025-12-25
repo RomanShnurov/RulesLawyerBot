@@ -36,7 +36,7 @@ def mock_settings(tmp_path: Path, monkeypatch):
     Returns:
         Mocked settings instance
     """
-    from src.config import settings
+    from src.rules_lawyer_bot.config import settings
 
     monkeypatch.setattr(settings, "pdf_storage_path", str(tmp_path / "pdfs"))
     monkeypatch.setattr(settings, "data_path", str(tmp_path / "data"))

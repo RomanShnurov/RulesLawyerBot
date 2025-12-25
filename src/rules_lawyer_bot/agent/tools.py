@@ -9,10 +9,10 @@ from typing import Callable, TypeVar
 from agents import function_tool
 from pypdf import PdfReader
 
-from src.config import settings
-from src.utils.logger import logger
-from src.utils.safety import safe_execution, ugrep_semaphore
-from src.utils.timer import ScopeTimer
+from src.rules_lawyer_bot.config import settings
+from src.rules_lawyer_bot.utils.logger import logger
+from src.rules_lawyer_bot.utils.safety import safe_execution, ugrep_semaphore
+from src.rules_lawyer_bot.utils.timer import ScopeTimer
 
 # Type variable for decorator
 F = TypeVar("F", bound=Callable)

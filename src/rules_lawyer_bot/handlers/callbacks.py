@@ -6,8 +6,8 @@ Handles inline button callbacks for game selection and other UI interactions.
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from src.pipeline.state import get_conversation_state
-from src.utils.logger import logger
+from src.rules_lawyer_bot.pipeline.state import get_conversation_state
+from src.rules_lawyer_bot.utils.logger import logger
 
 
 async def handle_game_selection(

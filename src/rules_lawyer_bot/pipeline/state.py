@@ -5,8 +5,8 @@ Provides per-user state tracking for multi-stage pipeline conversations.
 
 from telegram.ext import ContextTypes
 
-from src.utils.conversation_state import ConversationState
-from src.utils.logger import logger
+from src.rules_lawyer_bot.utils.conversation_state import ConversationState
+from src.rules_lawyer_bot.utils.logger import logger
 
 
 def get_conversation_state(

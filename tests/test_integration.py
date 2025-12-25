@@ -2,8 +2,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.handlers.messages import handle_message
-from src.agent.schemas import (
+from src.rules_lawyer_bot.handlers.messages import handle_message
+from src.rules_lawyer_bot.agent.schemas import (
     ActionType,
     PipelineOutput,
     GameIdentification,
@@ -46,8 +46,8 @@ async def test_message_handling_with_rate_limit(monkeypatch):
     # Mock the Runner.run_streamed() to avoid actual agent execution
     mock_result = create_mock_streaming_result(final_output="Test response")
 
-    with patch("src.handlers.messages.Runner.run_streamed", return_value=mock_result):
-        with patch("src.handlers.messages.send_long_message", new_callable=AsyncMock) as mock_send:
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner.run_streamed", return_value=mock_result):
+        with patch("src.rules_lawyer_bot.handlers.messages.send_long_message", new_callable=AsyncMock) as mock_send:
             # First request should succeed
             await handle_message(mock_update, mock_context)
 
@@ -93,8 +93,8 @@ async def test_pipeline_output_final_answer():
 
     mock_result = create_mock_streaming_result(final_output=pipeline_output)
 
-    with patch("src.handlers.messages.Runner.run_streamed", return_value=mock_result):
-        with patch("src.pipeline.handler.send_long_message", new_callable=AsyncMock) as mock_send:
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner.run_streamed", return_value=mock_result):
+        with patch("src.rules_lawyer_bot.pipeline.handler.send_long_message", new_callable=AsyncMock) as mock_send:
             await handle_message(mock_update, mock_context)
 
             # Verify message was sent
@@ -108,7 +108,7 @@ async def test_pipeline_output_final_answer():
 @pytest.mark.asyncio
 async def test_pipeline_output_clarification_needed():
     """Test handling of PipelineOutput with clarification_needed action_type."""
-    from src.agent.schemas import ClarificationRequest
+    from src.rules_lawyer_bot.agent.schemas import ClarificationRequest
 
     mock_update = MagicMock()
     mock_update.effective_user.id = 12345
@@ -135,7 +135,7 @@ async def test_pipeline_output_clarification_needed():
 
     mock_result = create_mock_streaming_result(final_output=pipeline_output)
 
-    with patch("src.handlers.messages.Runner.run_streamed", return_value=mock_result):
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner.run_streamed", return_value=mock_result):
         await handle_message(mock_update, mock_context)
 
         # Verify clarification was sent
@@ -147,7 +147,7 @@ async def test_pipeline_output_clarification_needed():
 @pytest.mark.asyncio
 async def test_blocklist_prompt_injection():
     """Test that prompt injection attempts are blocked."""
-    from src.handlers.messages import _check_blocklist, BLOCKLIST_RESPONSE
+    from src.rules_lawyer_bot.handlers.messages import _check_blocklist, BLOCKLIST_RESPONSE
 
     mock_update = MagicMock()
     mock_update.effective_user.id = 12345
@@ -161,7 +161,7 @@ async def test_blocklist_prompt_injection():
     mock_context.user_data = {}
 
     # Should be blocked without calling the agent
-    with patch("src.handlers.messages.Runner.run_streamed") as mock_run:
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner.run_streamed") as mock_run:
         await handle_message(mock_update, mock_context)
 
         # Agent should NOT be called
@@ -174,7 +174,7 @@ async def test_blocklist_prompt_injection():
 @pytest.mark.asyncio
 async def test_blocklist_patterns():
     """Test various blocklist patterns."""
-    from src.handlers.messages import _check_blocklist
+    from src.rules_lawyer_bot.handlers.messages import _check_blocklist
 
     # Should be blocked
     blocked_messages = [

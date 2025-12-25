@@ -17,3 +17,6 @@ dependencies = [
     "mypy>=1.19.1",
     "logfire>=3.0.0",
 ]
+
+[tool.uv]
+package = true

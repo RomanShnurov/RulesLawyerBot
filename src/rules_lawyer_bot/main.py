@@ -18,9 +18,9 @@ from telegram.ext import (
     filters,
 )
 
-from src.config import settings
-from src.handlers import callbacks, commands, messages
-from src.utils.logger import logger
+from src.rules_lawyer_bot.config import settings
+from src.rules_lawyer_bot.handlers import callbacks, commands, messages
+from src.rules_lawyer_bot.utils.logger import logger
 
 
 # ============================================
@@ -47,7 +47,7 @@ def main() -> None:
     logger.info(f"PDF Storage: {settings.pdf_storage_path}")
 
     # Initialize Langfuse observability (must be done BEFORE agent creation)
-    from src.utils.observability import setup_langfuse_instrumentation
+    from src.rules_lawyer_bot.utils.observability import setup_langfuse_instrumentation
 
     tracing_enabled = setup_langfuse_instrumentation()
     if tracing_enabled:
@@ -61,7 +61,7 @@ def main() -> None:
     # Register post-shutdown callback to flush Langfuse traces
     async def on_shutdown(app: Application) -> None:
         """Flush Langfuse traces on application shutdown."""
-        from src.utils.observability import shutdown_langfuse
+        from src.rules_lawyer_bot.utils.observability import shutdown_langfuse
 
         shutdown_langfuse()
 

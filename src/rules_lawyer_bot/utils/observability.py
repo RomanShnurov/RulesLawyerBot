@@ -7,8 +7,8 @@ See: https://cookbook.openai.com/examples/agents_sdk/evaluate_agents
 import base64
 from typing import TYPE_CHECKING, Optional
 
-from src.config import settings
-from src.utils.logger import logger
+from src.rules_lawyer_bot.config import settings
+from src.rules_lawyer_bot.utils.logger import logger
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor

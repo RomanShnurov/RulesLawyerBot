@@ -79,7 +79,7 @@ See [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) for detailed Docker documentati
 
 3. **Run the bot:**
    ```bash
-   python -m src.main
+   python -m src.rules_lawyer_bot.main
    ```
 
 ## Environment Variables

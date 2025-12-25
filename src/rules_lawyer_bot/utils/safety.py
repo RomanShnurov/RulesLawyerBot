@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 from functools import wraps
 from typing import Callable, TypeVar
 
-from src.config import settings
-from src.utils.logger import logger
+from src.rules_lawyer_bot.config import settings
+from src.rules_lawyer_bot.utils.logger import logger
 
 F = TypeVar('F', bound=Callable)
 

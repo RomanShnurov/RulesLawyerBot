@@ -90,7 +90,7 @@ validate:
 
 # Run bot locally (without Docker)
 run-local:
-    uv run python -m src.main
+    uv run python -m src.rules_lawyer_bot.main
 
 # Setup project from scratch
 setup:

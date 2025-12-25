@@ -139,7 +139,7 @@ cp .env.example .env
 just run-local
 
 # Or directly with Python
-python -m src.main
+python -m src.rules_lawyer_bot.main
 ```
 
 ---
@@ -246,7 +246,7 @@ OPENAI_MODEL=gpt-4o       # Best performance
 Then restart:
 ```bash
 just restart  # Docker
-# or press Ctrl+C and run: python -m src.main  # Local
+# or press Ctrl+C and run: python -m src.rules_lawyer_bot.main  # Local
 ```
 
 See [SGR_ARCHITECTURE.md](SGR_ARCHITECTURE.md) Troubleshooting section for details.
@@ -261,7 +261,7 @@ just build && just up
 **Local users:**
 Make sure you're running as a module:
 ```bash
-python -m src.main  # ✅ Correct
+python -m src.rules_lawyer_bot.main  # ✅ Correct
 # NOT: python src/main.py  # ❌ Wrong
 ```
 
@@ -284,7 +284,7 @@ just down && just build && just up  # Full rebuild
 ```
 
 **Local:**
-Just restart the bot (Ctrl+C, then `python -m src.main`)
+Just restart the bot (Ctrl+C, then `python -m src.rules_lawyer_bot.main`)
 
 ---
 

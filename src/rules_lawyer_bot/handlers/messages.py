@@ -11,15 +11,15 @@ from agents import Runner
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from src.agent.definition import get_user_session, rules_agent
-from src.agent.schemas import PipelineOutput
-from src.config import settings
-from src.pipeline.handler import handle_pipeline_output
-from src.pipeline.state import get_conversation_state
-from src.utils.logger import logger
-from src.utils.progress_reporter import ProgressReporter
-from src.utils.safety import rate_limiter, ugrep_semaphore
-from src.utils.telegram_helpers import send_long_message
+from src.rules_lawyer_bot.agent.definition import get_user_session, rules_agent
+from src.rules_lawyer_bot.agent.schemas import PipelineOutput
+from src.rules_lawyer_bot.config import settings
+from src.rules_lawyer_bot.pipeline.handler import handle_pipeline_output
+from src.rules_lawyer_bot.pipeline.state import get_conversation_state
+from src.rules_lawyer_bot.utils.logger import logger
+from src.rules_lawyer_bot.utils.progress_reporter import ProgressReporter
+from src.rules_lawyer_bot.utils.safety import rate_limiter, ugrep_semaphore
+from src.rules_lawyer_bot.utils.telegram_helpers import send_long_message
 
 # Blocklist patterns to prevent prompt injection and off-topic abuse
 # Case-insensitive matching
@@ -263,7 +263,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Run with root span for Langfuse tracing
     if tracer is not None:
         # Create root span with user context
-        from src.utils.observability import get_trace_context_for_user
+        from src.rules_lawyer_bot.utils.observability import get_trace_context_for_user
 
         trace_attrs = get_trace_context_for_user(user.id, user.username)
         # Add session ID for Langfuse session grouping
@@ -286,7 +286,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if settings.admin_ids and user.id in settings.admin_ids:
                 try:
                     from opentelemetry import trace as otel_trace
-                    from src.utils.observability import create_trace_url
+                    from src.rules_lawyer_bot.utils.observability import create_trace_url
 
                     trace_id = format(root_span.get_span_context().trace_id, '032x')
                     trace_url = create_trace_url(trace_id)

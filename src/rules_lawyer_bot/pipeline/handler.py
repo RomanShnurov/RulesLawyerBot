@@ -6,11 +6,11 @@ Routes pipeline outputs to appropriate Telegram UI actions based on action_type.
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from src.agent.schemas import ActionType, PipelineOutput
-from src.pipeline.state import get_conversation_state
-from src.utils.conversation_state import ConversationStage
-from src.utils.logger import logger
-from src.utils.telegram_helpers import send_long_message
+from src.rules_lawyer_bot.agent.schemas import ActionType, PipelineOutput
+from src.rules_lawyer_bot.pipeline.state import get_conversation_state
+from src.rules_lawyer_bot.utils.conversation_state import ConversationStage
+from src.rules_lawyer_bot.utils.logger import logger
+from src.rules_lawyer_bot.utils.telegram_helpers import send_long_message
 
 
 def build_game_selection_keyboard(

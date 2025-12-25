@@ -9,16 +9,16 @@ from pathlib import Path
 from agents import Agent, OpenAIChatCompletionsModel, SQLiteSession
 from openai import AsyncOpenAI
 
-from src.agent.schemas import PipelineOutput
-from src.agent.tools import (
+from src.rules_lawyer_bot.agent.schemas import PipelineOutput
+from src.rules_lawyer_bot.agent.tools import (
     list_directory_tree,
     parallel_search_terms,
     read_full_document,
     search_filenames,
     search_inside_file_ugrep,
 )
-from src.config import settings
-from src.utils.logger import logger
+from src.rules_lawyer_bot.config import settings
+from src.rules_lawyer_bot.utils.logger import logger
 
 # Tracing is now controlled by Langfuse instrumentation (see src/main.py)
 

@@ -8,8 +8,8 @@ import pytest
 from pathlib import Path
 from pypdf import PdfReader
 
-from src.config import settings
-from src.utils.timer import ScopeTimer
+from src.rules_lawyer_bot.config import settings
+from src.rules_lawyer_bot.utils.timer import ScopeTimer
 
 
 # Internal implementation of search_filenames (copied from tools.py)
@@ -269,7 +269,7 @@ async def _parallel_search_terms_impl(
 ) -> str:
     """Internal implementation of parallel_search_terms for testing."""
     import json
-    from src.utils.timer import ScopeTimer
+    from src.rules_lawyer_bot.utils.timer import ScopeTimer
 
     with ScopeTimer(f"parallel_search_terms('{filename}', {len(terms)} terms)"):
         if not terms:

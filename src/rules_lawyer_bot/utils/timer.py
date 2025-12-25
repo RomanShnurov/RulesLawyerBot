@@ -3,7 +3,7 @@ import time
 from contextlib import contextmanager
 from typing import Generator
 
-from src.utils.logger import logger
+from src.rules_lawyer_bot.utils.logger import logger
 
 
 class ScopeTimer:

@@ -358,7 +358,7 @@ Agent: PipelineOutput(
 ### Agent Definition (`src/agent/definition.py`)
 
 ```python
-from src.agent.schemas import PipelineOutput
+from src.rules_lawyer_bot.agent.schemas import PipelineOutput
 
 agent = Agent(
     name="Board Game Referee",
