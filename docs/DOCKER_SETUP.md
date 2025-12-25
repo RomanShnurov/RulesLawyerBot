@@ -93,18 +93,23 @@ Configuration is managed via `.env` file. See `.env.example` for template.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_BASE_URL` | `https://api.proxyapi.ru/openai/v1` | OpenAI API endpoint |
-| `OPENAI_MODEL` | `gpt-5-nano` | Model name (⚠️ use `gpt-4o-mini` or `gpt-4o` for reliable tool calling) |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI API endpoint |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model name (recommended: `gpt-4o-mini` or `gpt-4o` for reliable tool calling) |
 | `PDF_STORAGE_PATH` | `./rules_pdfs` (local)<br>`/app/rules_pdfs` (Docker) | PDF storage directory |
 | `DATA_PATH` | `./data` (local)<br>`/app/data` (Docker) | Data directory for sessions and logs |
 | `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `MAX_REQUESTS_PER_MINUTE` | `10` | Per-user rate limiting |
 | `MAX_CONCURRENT_SEARCHES` | `4` | Max concurrent ugrep processes |
 | `ADMIN_USER_IDS` | _(empty)_ | Comma-separated Telegram user IDs with admin access |
+| `LANGFUSE_PUBLIC_KEY` | _(empty)_ | Langfuse public API key for observability (optional) |
+| `LANGFUSE_SECRET_KEY` | _(empty)_ | Langfuse secret API key for observability (optional) |
+| `LANGFUSE_BASE_URL` | `https://cloud.langfuse.com` | Langfuse API endpoint |
+| `ENABLE_TRACING` | `false` | Enable OpenTelemetry tracing to Langfuse |
+| `LANGFUSE_ENVIRONMENT` | `production` | Environment name for Langfuse traces |
 
 ### Model Selection Notes
 
-**Important**: The default model (`gpt-5-nano`) may skip tool calls. For production use:
+**Important**: The default model (`gpt-4o-mini`) provides reliable tool calling. For production use:
 
 ```env
 # Recommended for production
@@ -336,6 +341,7 @@ ADMIN_USER_IDS=123456,789012  # Your admin Telegram IDs
 - [ ] Configure `OPENAI_MODEL=gpt-4o-mini` or `gpt-4o`
 - [ ] Set `LOG_LEVEL=WARNING` for production
 - [ ] Configure `ADMIN_USER_IDS` for admin access
+- [ ] (Optional) Enable observability: Set `ENABLE_TRACING=true` and configure `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`
 - [ ] Set `restart: unless-stopped` in `docker-compose.yml`
 - [ ] Configure log rotation (see above)
 - [ ] Set up backup for `./data` directory (SQLite sessions)

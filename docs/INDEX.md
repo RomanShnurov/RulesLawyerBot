@@ -45,14 +45,15 @@ RulesLawyerBot/
 │   │   ├── handler.py       # Pipeline output routing
 │   │   └── state.py         # Conversation state management
 │   ├── formatters/          # Output formatting
-│   │   └── sgr.py           # Schema-Guided Reasoning formatting
+│   │   └── __init__.py      # (Empty - formatting done inline)
 │   └── utils/               # Utility modules
 │       ├── logger.py        # Logging configuration
 │       ├── timer.py         # Performance monitoring (ScopeTimer)
 │       ├── safety.py        # Rate limiting, semaphore, error handling
 │       ├── telegram_helpers.py  # Message splitting utilities
 │       ├── conversation_state.py # Per-user state tracking
-│       └── progress_reporter.py  # Streaming progress updates
+│       ├── progress_reporter.py  # Streaming progress updates
+│       └── observability.py # Langfuse integration via OpenTelemetry
 ├── tests/                   # Comprehensive test suite
 │   ├── conftest.py          # Pytest fixtures
 │   ├── test_tools.py        # Unit tests for agent tools
@@ -111,6 +112,7 @@ RulesLawyerBot/
 - **Confidence Indicators**: Visual indicators (✅/⚠️/❓) showing agent's confidence level
 - **Source References**: All answers include page numbers and file references
 - **Related Questions**: Agent suggests follow-up questions after each answer
+- **Observability**: Optional Langfuse integration via OpenTelemetry for agent tracing and monitoring
 
 ---
 
@@ -159,14 +161,19 @@ See [.env.example](../.env.example) for configuration options:
 - `OPENAI_API_KEY` - Your OpenAI API key
 
 **Optional:**
-- `OPENAI_BASE_URL` - Custom API endpoint (default: `https://api.proxyapi.ru/openai/v1`)
-- `OPENAI_MODEL` - Model to use (default: `gpt-5-nano`, recommended: `gpt-4o-mini` or `gpt-4o` for reliable tool calling)
+- `OPENAI_BASE_URL` - Custom API endpoint (default: `https://api.openai.com/v1`)
+- `OPENAI_MODEL` - Model to use (default: `gpt-4o-mini`, recommended for reliable tool calling)
 - `PDF_STORAGE_PATH` - PDF storage directory (default: `./rules_pdfs`)
 - `DATA_PATH` - Data directory (default: `./data`)
 - `LOG_LEVEL` - Logging level (default: `INFO`)
 - `MAX_REQUESTS_PER_MINUTE` - Rate limiting (default: `10`)
 - `MAX_CONCURRENT_SEARCHES` - Concurrent search limit (default: `4`)
 - `ADMIN_USER_IDS` - Comma-separated admin Telegram user IDs
+- `LANGFUSE_PUBLIC_KEY` - Langfuse public API key for observability (optional)
+- `LANGFUSE_SECRET_KEY` - Langfuse secret API key for observability (optional)
+- `LANGFUSE_BASE_URL` - Langfuse API endpoint (default: `https://cloud.langfuse.com`)
+- `ENABLE_TRACING` - Enable OpenTelemetry tracing to Langfuse (default: `false`)
+- `LANGFUSE_ENVIRONMENT` - Environment name for Langfuse traces (default: `production`)
 
 ---
 
@@ -208,16 +215,6 @@ See [.env.example](../.env.example) for configuration options:
 - ✅ Long message handling (auto-split >4000 chars)
 - ✅ Progress indicators and confidence visualization
 
-### 🚀 Future Enhancements
-
-See [README.md](../README.md) Roadmap section for planned features:
-- Image extraction from PDFs for rules diagrams
-- Redis-based rate limiting for multi-instance deployments
-- Prometheus metrics and monitoring
-- Webhook mode for Telegram (instead of polling)
-- Advanced caching strategies
-- Voice message support
-- Image recognition for card/component identification
 
 ---
 

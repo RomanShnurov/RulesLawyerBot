@@ -11,8 +11,8 @@ services:
     environment:
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.proxyapi.ru/openai/v1}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-nano}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
       - PDF_STORAGE_PATH=/app/rules_pdfs
       - DATA_PATH=/app/data
       - LOG_LEVEL=${LOG_LEVEL:-INFO}

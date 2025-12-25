@@ -22,11 +22,11 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: str = Field(..., description="OpenAI API key")
     openai_base_url: str = Field(
-        default="https://api.proxyapi.ru/openai/v1",
+        default="https://api.openai.com/v1",
         description="OpenAI API base URL"
     )
     openai_model: str = Field(
-        default="gpt-5-nano",
+        default="gpt-4o-mini",
         description="OpenAI model name"
     )
 

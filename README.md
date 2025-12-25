@@ -1,5 +1,9 @@
 # RulesLawyerBot
 
+<p align="center">
+  <img src="logo/RulesLawyerBot.png" alt="RulesLawyerBot Logo" width="400"/>
+</p>
+
 A production-ready Telegram bot that acts as a board game rules referee, using OpenAI's Agents SDK with a multi-stage conversational pipeline to search through PDF rulebooks and answer questions in multiple languages.
 
 ## Features
@@ -14,6 +18,7 @@ A production-ready Telegram bot that acts as a board game rules referee, using O
 - **Smart Filename Translation**: Automatically translates localized game names to English filenames
 - **Per-User Sessions**: Isolated SQLite conversation history for each user
 - **Game Context Memory**: Remembers current game across conversation turns
+- **Observability**: Optional Langfuse integration via OpenTelemetry for agent tracing and monitoring
 
 ### Interactive UI
 - **Inline Keyboard Buttons**: Game selection via clickable buttons
@@ -35,7 +40,7 @@ A production-ready Telegram bot that acts as a board game rules referee, using O
 
 1. **Clone the repository:**
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/RomanShnurov/RulesLawyerBot.git
    cd RulesLawyerBot
    ```
 
@@ -77,65 +82,6 @@ See [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) for detailed Docker documentati
    python -m src.main
    ```
 
-## Project Structure
-
-```
-RulesLawyerBot/
-├── src/
-│   ├── __init__.py
-│   ├── main.py              # Telegram bot entry point (async handlers)
-│   ├── config.py            # Settings with pydantic-settings
-│   ├── agent/
-│   │   ├── __init__.py
-│   │   ├── definition.py    # Agent creation & session management
-│   │   ├── tools.py         # Agent tools (search_filenames, ugrep, etc.)
-│   │   └── schemas.py       # Pydantic schemas for SGR pipeline
-│   ├── handlers/
-│   │   ├── __init__.py
-│   │   ├── commands.py      # Command handlers (/start, /games)
-│   │   ├── messages.py      # Message handler with streaming
-│   │   └── callbacks.py     # Inline button callback handlers
-│   ├── pipeline/
-│   │   ├── __init__.py
-│   │   ├── handler.py       # Multi-stage pipeline output routing
-│   │   └── state.py         # Conversation state management
-│   ├── formatters/
-│   │   ├── __init__.py
-│   │   └── sgr.py           # Schema-Guided Reasoning formatting
-│   └── utils/
-│       ├── __init__.py
-│       ├── logger.py        # Logging configuration
-│       ├── timer.py         # Performance monitoring (ScopeTimer)
-│       ├── safety.py        # Rate limiting, semaphore, error handling
-│       ├── telegram_helpers.py  # Message splitting utilities
-│       ├── conversation_state.py # Per-user state tracking
-│       └── progress_reporter.py  # Streaming progress updates
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py          # Pytest fixtures
-│   ├── test_tools.py        # Unit tests for agent tools
-│   ├── test_integration.py  # End-to-end integration tests
-│   └── load_test.py         # Performance/load testing
-├── rules_pdfs/              # PDF storage directory
-├── data/
-│   ├── sessions/            # Per-user SQLite session databases
-│   └── app.log              # Application logs
-├── docs/                    # Comprehensive documentation
-│   ├── INDEX.md             # Documentation entry point
-│   ├── QUICKSTART.md        # Getting started guide
-│   ├── DOCKER_SETUP.md      # Docker deployment guide
-│   └── plans/               # Implementation plans & architecture
-├── Dockerfile               # Multi-stage Docker build (Python 3.13)
-├── docker-compose.yml       # Docker Compose configuration
-├── .env.example             # Example environment variables
-├── .dockerignore            # Docker build exclusions
-├── justfile                 # Just command runner (recommended)
-├── Makefile                 # Make command runner (alternative)
-├── pyproject.toml           # Python dependencies (uv)
-├── uv.lock                  # Locked dependencies
-└── README.md                # This file
-```
-
 ## Environment Variables
 
 ### Required
@@ -143,14 +89,19 @@ RulesLawyerBot/
 - `OPENAI_API_KEY`: Your OpenAI API key
 
 ### Optional
-- `OPENAI_BASE_URL`: OpenAI API endpoint (default: `https://api.proxyapi.ru/openai/v1`)
-- `OPENAI_MODEL`: Model to use (default: `gpt-5-nano`)
+- `OPENAI_BASE_URL`: OpenAI API endpoint (default: `https://api.openai.com/v1`)
+- `OPENAI_MODEL`: Model to use (default: `gpt-4o-mini`)
 - `PDF_STORAGE_PATH`: PDF storage directory (default: `./rules_pdfs`)
 - `DATA_PATH`: Data directory (default: `./data`)
 - `LOG_LEVEL`: Logging level (default: `INFO`)
 - `MAX_REQUESTS_PER_MINUTE`: Rate limiting (default: `10`)
 - `MAX_CONCURRENT_SEARCHES`: Concurrent search limit (default: `4`)
 - `ADMIN_USER_IDS`: Comma-separated list of admin Telegram user IDs
+- `LANGFUSE_PUBLIC_KEY`: Langfuse public API key for observability (optional, leave empty to disable)
+- `LANGFUSE_SECRET_KEY`: Langfuse secret API key for observability (optional)
+- `LANGFUSE_BASE_URL`: Langfuse API endpoint (default: `https://cloud.langfuse.com`)
+- `ENABLE_TRACING`: Enable OpenTelemetry tracing to Langfuse (default: `false`)
+- `LANGFUSE_ENVIRONMENT`: Environment name for Langfuse traces (default: `production`)
 
 ## Bot Commands
 
@@ -335,9 +286,14 @@ The bot uses a conversational pipeline that adapts based on user input:
 - **SQLite**: Conversation persistence (per-user databases)
 - **pydantic-settings**: Type-safe configuration
 
+### Observability
+- **Logfire**: Pydantic's observability platform with OpenTelemetry
+- **Langfuse**: LLM application monitoring via OpenTelemetry OTLP
+
 ### Development
 - **pytest**: Testing framework with async support
 - **ruff**: Fast Python linter and formatter
+- **mypy**: Static type checking
 - **just/make**: Command runners for development tasks
 
 ## Adding PDF Rulebooks
@@ -372,24 +328,6 @@ The `tests/conftest.py` provides shared fixtures:
 - Mock environment variables
 - Isolated test directories
 
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Make your changes
-4. Run tests and linting: `just test lint` (or `make test lint`)
-5. Format code: `just format` (or `make format`)
-6. Commit changes: `git commit -m "Description"`
-7. Push to branch: `git push origin feature/your-feature`
-8. Submit a pull request
-
-### Code Style
-- Follow PEP 8 style guide
-- Use type hints for all functions
-- Write docstrings for public APIs
-- Keep line length ≤100 characters
-- Run `ruff` before committing
-
 ## Deployment
 
 ### Docker Deployment (Production)
@@ -415,15 +353,6 @@ The `tests/conftest.py` provides shared fixtures:
    just logs
    ```
 
-### Deployment Checklist
-- [ ] Set `TELEGRAM_TOKEN` and `OPENAI_API_KEY` in `.env`
-- [ ] Configure `ADMIN_USER_IDS` for admin access
-- [ ] Adjust rate limits: `MAX_REQUESTS_PER_MINUTE`, `MAX_CONCURRENT_SEARCHES`
-- [ ] Set `LOG_LEVEL=WARNING` for production (reduces log volume)
-- [ ] Mount persistent volumes for `rules_pdfs/` and `data/`
-- [ ] Set up log rotation for `data/app.log`
-- [ ] Configure restart policy in `docker-compose.yml`
-
 See [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) for advanced deployment configurations.
 
 ## Documentation
@@ -433,9 +362,7 @@ See [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) for advanced deployment configu
 - **[docs/INDEX.md](docs/INDEX.md)** - Documentation overview and navigation
 - **[docs/QUICKSTART.md](docs/QUICKSTART.md)** - Step-by-step getting started guide
 - **[docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md)** - Docker deployment and troubleshooting
-- **[docs/plans/mvp/overview.md](docs/plans/mvp/overview.md)** - Architecture overview
-- **[docs/plans/mvp/COMPREHENSIVE_IMPLEMENTATION_PLAN.md](docs/plans/mvp/COMPREHENSIVE_IMPLEMENTATION_PLAN.md)** - Implementation phases
-- **[docs/plans/next_steps.md](docs/plans/next_steps.md)** - Future enhancements
+- **[docs/SGR_ARCHITECTURE.md](docs/SGR_ARCHITECTURE.md)** - Schema-Guided Reasoning implementation guide
 
 ## Troubleshooting
 
@@ -458,44 +385,11 @@ See [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) for advanced deployment configu
 
 ## License
 
-[Add your license here]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Support
 
 For issues and questions, please open an issue on GitHub.
-
-## Roadmap
-
-### Completed (v0.1.0)
-- ✅ Modular architecture with separate modules
-- ✅ Per-user session isolation
-- ✅ Rate limiting and resource management
-- ✅ Async architecture for performance
-- ✅ Docker multi-stage build
-- ✅ Comprehensive testing
-- ✅ Documentation
-
-### Completed (v0.2.0 - Multi-Stage Pipeline)
-- ✅ Multi-stage conversational pipeline
-- ✅ Schema-Guided Reasoning (SGR) with structured outputs
-- ✅ Inline keyboard buttons for game selection
-- ✅ Streaming progress updates with fun messages
-- ✅ `/games` command with fuzzy search
-- ✅ Game context persistence across conversation
-- ✅ Callback query handlers for UI interactions
-- ✅ Modular handler organization (commands, messages, callbacks)
-- ✅ Progress reporter with thematic status messages
-- ✅ Confidence scores and source references in answers
-
-### Future Enhancements
-See [docs/plans/next_steps.md](docs/plans/next_steps.md) for detailed roadmap:
-- Image extraction from PDFs for rules diagrams
-- Redis-based rate limiting for multi-instance deployments
-- Prometheus metrics and monitoring
-- Webhook mode for Telegram (instead of polling)
-- Advanced caching strategies
-- Voice message support for questions
-- Image recognition for card/component identification
 
 ---
 

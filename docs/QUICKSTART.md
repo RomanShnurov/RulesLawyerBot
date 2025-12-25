@@ -38,9 +38,9 @@ OPENAI_API_KEY=YOUR_OPENAI_KEY_HERE
 
 **Recommended optional settings:**
 ```env
-# Use a more capable model for reliable tool calling
-OPENAI_MODEL=gpt-4o-mini  # or gpt-4o for best performance
-# Default is gpt-5-nano which may skip tool calls
+# The default model is gpt-4o-mini (provides reliable tool calling)
+# You can optionally upgrade to gpt-4o for best performance
+OPENAI_MODEL=gpt-4o  # Optional: use gpt-4o for maximum performance
 ```
 
 ### Step 2: Build and Start
