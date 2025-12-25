@@ -225,5 +225,6 @@ rules_pdfs/
 
 #other
 .claude/
+CLAUDE.md
 *.code-workspace
 specs/
