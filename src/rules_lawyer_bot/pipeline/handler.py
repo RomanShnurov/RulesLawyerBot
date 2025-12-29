@@ -7,6 +7,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from src.rules_lawyer_bot.agent.schemas import ActionType, PipelineOutput
+from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.pipeline.state import get_conversation_state
 from src.rules_lawyer_bot.utils.conversation_state import ConversationStage
 from src.rules_lawyer_bot.utils.logger import logger
@@ -159,6 +160,12 @@ async def handle_pipeline_output(
         if output.final_answer.suggestions:
             suggestions_text = " • ".join(output.final_answer.suggestions[:3])
             parts.append(f"\n💡 *См. также:* {suggestions_text}")
+
+        # Add reasoning trace for admin users (ReAct-inspired transparency)
+        if user_id in settings.admin_ids and output.stage_reasoning:
+            parts.append("\n" + "─" * 40)
+            parts.append("🔬 *Reasoning Trace (Admin Only):*")
+            parts.append(f"```\n{output.stage_reasoning}\n```")
 
         response_text = "\n".join(parts)
 
