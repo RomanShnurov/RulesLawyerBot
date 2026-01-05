@@ -21,18 +21,9 @@ A production-ready Telegram bot that acts as a board game rules referee, using O
 - **Observability**: Optional Langfuse integration via OpenTelemetry for agent tracing and monitoring
 
 ### Interactive UI
-- **Inline Keyboard Buttons**: Game selection via clickable buttons
 - **Fuzzy Game Search**: `/games` command with smart search and suggestions
 - **Context-Aware Responses**: Answers formatted with sources and related questions
 - **Progress Indicators**: Real-time updates with creative status messages
-
-### Production-Ready Features
-- **Rate Limiting**: Configurable request limits per user (default: 10 req/min)
-- **Concurrent Search Control**: Semaphore-based limits for resource management (max 4 concurrent searches)
-- **Async Architecture**: Non-blocking operations for optimal performance
-- **Long Message Handling**: Automatic splitting of responses >4000 characters
-- **Graceful Shutdown**: Proper signal handling for zero-downtime deployments
-- **Comprehensive Testing**: Unit tests, integration tests, and load testing
 
 ## Quick Start
 
@@ -102,6 +93,7 @@ See [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) for detailed Docker documentati
 - `LANGFUSE_BASE_URL`: Langfuse API endpoint (default: `https://cloud.langfuse.com`)
 - `ENABLE_TRACING`: Enable OpenTelemetry tracing to Langfuse (default: `false`)
 - `LANGFUSE_ENVIRONMENT`: Environment name for Langfuse traces (default: `production`)
+- `BGG_API_TOKEN`: BoardGameGeek API token for auto-generating game metadata (optional, see [BGG API Setup](docs/BGG_API_SETUP.md))
 
 ## Bot Commands
 
@@ -115,6 +107,32 @@ See [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) for detailed Docker documentati
 /games wingspan          # Search for "Wingspan"
 /games gloomy            # Fuzzy search finds "Gloomhaven"
 ```
+
+## Utility Scripts
+
+### Generate Games Index
+
+Automatically generate `rules_pdfs/games_index.json` from your PDF collection using BoardGameGeek API:
+
+```bash
+uv run python scripts/generate_games_index.py
+```
+
+This script:
+- Scans all PDF files in `rules_pdfs/` directory
+- Fetches game metadata from BoardGameGeek (Russian names, categories, mechanics)
+- Generates/updates the games index used by the bot
+
+**Requirements:**
+- BGG API token (see [BGG API Setup](docs/BGG_API_SETUP.md))
+- Add `BGG_API_TOKEN` to your `.env` file
+
+**Features:**
+- Incremental updates (only queries new games)
+- Automatic Russian name detection
+- Fallback for games not found in BGG
+
+See [docs/BGG_API_SETUP.md](docs/BGG_API_SETUP.md) for detailed setup instructions.
 
 ## Development Commands
 
@@ -298,12 +316,46 @@ The bot uses a conversational pipeline that adapts based on user input:
 
 ## Adding PDF Rulebooks
 
-Place PDF rulebooks in the `rules_pdfs/` directory. The bot will automatically search them.
+### Quick Start
 
-**Naming Convention**: Use the original English game name for best results:
+1. **Add PDF file** to `rules_pdfs/` using English name:
+   ```
+   rules_pdfs/Wingspan.pdf
+   ```
+
+2. **Add entry to games index** (`rules_pdfs/games_index.json`):
+   ```json
+   {
+     "english_name": "Wingspan",
+     "russian_names": ["Крылья", "Вингспан"],
+     "pdf_files": ["Wingspan.pdf"],
+     "tags": ["engine-building", "птицы"]
+   }
+   ```
+
+3. **Done!** Users can now search in Russian or English:
+   - "Как играть в Крылья?" → finds Wingspan.pdf
+   - "How to play Wingspan?" → finds Wingspan.pdf
+
+### Games Index (Multilingual Support)
+
+The `rules_pdfs/games_index.json` file enables accurate **Russian ↔ English** game name matching for 100+ games.
+
+**Benefits:**
+- ✅ Reliable bilingual search (no LLM guessing)
+- ✅ Multiple name variants per game (official, transliteration, slang)
+- ✅ Support for games with multiple PDFs (expansions, FAQ)
+- ✅ Fast lookup without token usage
+
+**See [docs/GAMES_INDEX.md](docs/GAMES_INDEX.md) for complete documentation.**
+
+### Naming Convention
+
+Use the original English game name for PDF files:
 - ✅ `Wingspan.pdf`
 - ✅ `Super Fantasy Brawl.pdf`
-- ❌ `Крылья крылья.pdf` (Russian name - will work but harder to find)
+- ✅ `Gloomhaven - Forgotten Circles.pdf`
+- ❌ `Крылья.pdf` (Russian name - use games_index.json instead)
 
 ## Testing
 
@@ -363,6 +415,8 @@ See [docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md) for advanced deployment configu
 - **[docs/QUICKSTART.md](docs/QUICKSTART.md)** - Step-by-step getting started guide
 - **[docs/DOCKER_SETUP.md](docs/DOCKER_SETUP.md)** - Docker deployment and troubleshooting
 - **[docs/SGR_ARCHITECTURE.md](docs/SGR_ARCHITECTURE.md)** - Schema-Guided Reasoning implementation guide
+- **[docs/GAMES_INDEX.md](docs/GAMES_INDEX.md)** - Multilingual games index setup and usage
+- **[docs/BGG_API_SETUP.md](docs/BGG_API_SETUP.md)** - BoardGameGeek API setup for automatic game metadata
 
 ## Troubleshooting
 

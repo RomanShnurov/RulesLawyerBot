@@ -11,6 +11,7 @@ from openai import AsyncOpenAI
 
 from src.rules_lawyer_bot.agent.schemas import PipelineOutput
 from src.rules_lawyer_bot.agent.tools import (
+    find_game_by_name,
     list_directory_tree,
     parallel_search_terms,
     read_full_document,
@@ -75,8 +76,12 @@ Set action_type based on the current situation:
 1. Check if a game name is mentioned in the current question
 2. Check for context prefix: `[Context: Current game is 'X', PDF: 'Y']`
    - If present, use this game UNLESS user explicitly asks about a different game
-3. If game is unclear:
-   - Call `search_filenames()` with any partial name or keywords
+3. If game is unclear or mentioned in Russian/English:
+   - **PRIMARY: Call `find_game_by_name(game_name)` first** for multilingual search
+     * Works with Russian names: "Мёртвые клетки" → Dead Cells.pdf
+     * Works with English names: "Dead Cells" → Dead Cells.pdf
+     * Returns exact game info with PDF files
+   - **FALLBACK: Call `search_filenames()`** only if find_game_by_name() fails
    - If multiple matches: set action_type="game_selection" with candidates
    - If no matches or no game mentioned at all:
      * **MUST call `list_directory_tree()` to get list of available games**
@@ -321,18 +326,28 @@ and search only returns text references, add a note:
 
 ## TOOLS
 
-1. `list_directory_tree(path, max_depth)` - View rules library structure
+1. `find_game_by_name(query)` - Find game by Russian or English name (PRIMARY TOOL)
+   - **Use FIRST for game identification** - supports both Russian and English
+   - **Use for "do you have X?" queries** - checks games_index.json
+   - Returns game info with english_name, russian_names, pdf_files, tags
+   - **Examples:**
+     * `find_game_by_name("Мёртвые клетки")` → Dead Cells info
+     * `find_game_by_name("Dead Cells")` → Dead Cells info
+     * `find_game_by_name("wingspan")` → Wingspan info
+   - **Fallback**: If not found, suggests using search_filenames() or list_directory_tree()
+
+2. `list_directory_tree(path, max_depth)` - View rules library structure
    - **Use for game discovery queries** ("what games?", "какие игры?")
    - **Use when game not found** to show alternatives
    - Returns tree structure or numbered list of games
 
-2. `search_filenames(query, fuzzy=False)` - Find PDF by game name (use English titles)
-   - **Use for "do you have X?" queries** to check game existence
-   - **Use for game identification** when name partially mentioned
+3. `search_filenames(query)` - Find PDF by filename (FALLBACK TOOL)
+   - **Use ONLY if find_game_by_name() returns "not found"**
+   - Case-insensitive filename search in rules_pdfs/
    - Returns matching filenames or "No files found"
-   - **Tip**: If exact match fails (possible typo), retry with `fuzzy=True` for approximate matching
+   - Less reliable than find_game_by_name() for multilingual queries
 
-3. `search_inside_file_ugrep(filename, keywords, fuzzy=False)` - Fast search in PDF
+4. `search_inside_file_ugrep(filename, keywords, fuzzy=False)` - Fast search in PDF
    - **Only use for actual rules questions** (NOT for discovery/existence checks)
    - Use Russian morphology patterns for Russian questions
    - **Boolean query syntax:**
@@ -341,7 +356,7 @@ and search only returns text references, add a note:
      - Dash = NOT: `"attack -ranged"` excludes ranged
      - Quotes for exact: `'"end of turn"'`
 
-4. `parallel_search_terms(filename, terms, fuzzy=False)` - Search multiple terms in parallel
+5. `parallel_search_terms(filename, terms, fuzzy=False)` - Search multiple terms in parallel
    - **Use when question involves MULTIPLE distinct concepts** requiring separate searches
    - More efficient than sequential searches when you need to find:
      * Multiple game mechanics (e.g., ["movement", "combat", "resource management"])
@@ -353,7 +368,7 @@ and search only returns text references, add a note:
    - Limited to 10 terms max for performance
    - Each term can use Boolean syntax (space/|/-)
 
-5. `read_full_document(filename)` - Read entire PDF (LAST RESORT)
+6. `read_full_document(filename)` - Read entire PDF (LAST RESORT)
    - Only use after 2+ failed ugrep searches
    - Very expensive token-wise, use sparingly
 
@@ -499,8 +514,9 @@ available games, then populate `options` with the game names found!
         model=model,
         instructions=instructions,
         tools=[
-            list_directory_tree,  # First - for orientation
-            search_filenames,
+            find_game_by_name,  # First - multilingual game identification
+            list_directory_tree,  # Second - for orientation
+            search_filenames,  # Fallback for filename search
             search_inside_file_ugrep,
             parallel_search_terms,  # Parallel search for multiple concepts
             read_full_document,

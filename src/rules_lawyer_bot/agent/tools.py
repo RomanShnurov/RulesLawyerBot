@@ -1,6 +1,7 @@
 """Agent tool functions with async wrappers for blocking operations."""
 
 import asyncio
+import json
 import subprocess
 from functools import wraps
 from pathlib import Path
@@ -36,6 +37,89 @@ def async_tool(func: F) -> F:
         return await asyncio.to_thread(func, *args, **kwargs)
 
     return wrapper
+
+
+@function_tool
+@safe_execution
+@async_tool
+def find_game_by_name(query: str) -> str:
+    """Find game information by Russian or English name using the games index.
+
+    This tool searches through games_index.json to match game names in any language.
+    It's more reliable than search_filenames() for multilingual queries.
+
+    Args:
+        query: Game name in Russian, English, or transliteration
+
+    Returns:
+        JSON string with matching game(s) information:
+        - english_name: Official English name
+        - russian_names: List of known Russian variants
+        - pdf_files: Associated PDF files
+        - tags: Game categories/mechanics
+
+    Examples:
+        find_game_by_name("Мёртвые клетки")  # Returns Dead Cells info
+        find_game_by_name("Dead Cells")       # Returns Dead Cells info
+        find_game_by_name("wingspan")         # Returns Wingspan info (if exists)
+    """
+    with ScopeTimer(f"find_game_by_name('{query}')"):
+        index_path = Path(settings.pdf_storage_path) / "games_index.json"
+
+        if not index_path.exists():
+            logger.warning(f"Games index not found at {index_path}")
+            return json.dumps({
+                "found": False,
+                "error": "Games index not configured. Using fallback search.",
+                "suggestion": "Create games_index.json in rules_pdfs/"
+            }, ensure_ascii=False)
+
+        try:
+            with open(index_path, encoding="utf-8") as f:
+                index_data = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load games index: {e}")
+            return json.dumps({
+                "found": False,
+                "error": f"Failed to load games index: {str(e)}"
+            }, ensure_ascii=False)
+
+        query_lower = query.lower().strip()
+        matches = []
+
+        for game in index_data.get("games", []):
+            # Check English name
+            if query_lower in game["english_name"].lower():
+                matches.append(game)
+                continue
+
+            # Check Russian names
+            for ru_name in game.get("russian_names", []):
+                if query_lower in ru_name.lower():
+                    matches.append(game)
+                    break
+
+        if not matches:
+            return json.dumps({
+                "found": False,
+                "query": query,
+                "suggestion": "Try search_filenames() or list_directory_tree()"
+            }, ensure_ascii=False)
+
+        if len(matches) == 1:
+            result = {
+                "found": True,
+                "match_type": "exact",
+                "game": matches[0]
+            }
+        else:
+            result = {
+                "found": True,
+                "match_type": "multiple",
+                "games": matches
+            }
+
+        return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @function_tool

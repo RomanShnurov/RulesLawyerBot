@@ -19,6 +19,10 @@
 - [**QUICKSTART.md**](QUICKSTART.md) - Get the bot running in 5 minutes
 - [**DOCKER_SETUP.md**](DOCKER_SETUP.md) - Detailed Docker configuration and deployment guide
 
+### Configuration & Setup
+- [**GAMES_INDEX.md**](GAMES_INDEX.md) - Multilingual games index setup and usage
+- [**BGG_API_SETUP.md**](BGG_API_SETUP.md) - BoardGameGeek API setup for automatic game metadata
+
 ### Architecture & Technical Guides
 - [**SGR_ARCHITECTURE.md**](SGR_ARCHITECTURE.md) - **Schema-Guided Reasoning implementation guide** (transparent agent reasoning with structured outputs)
 - [**../CLAUDE.md**](../CLAUDE.md) - Instructions for Claude Code agent (architecture, patterns, conventions)
@@ -67,7 +71,11 @@ RulesLawyerBot/
 │   ├── INDEX.md             # This file - documentation entry point
 │   ├── QUICKSTART.md        # Quick start guide
 │   ├── DOCKER_SETUP.md      # Docker deployment guide
-│   └── SGR_ARCHITECTURE.md  # Schema-Guided Reasoning technical guide
+│   ├── SGR_ARCHITECTURE.md  # Schema-Guided Reasoning technical guide
+│   ├── GAMES_INDEX.md       # Games index documentation
+│   └── BGG_API_SETUP.md     # BoardGameGeek API setup guide
+├── scripts/                 # Utility scripts
+│   └── generate_games_index.py  # Auto-generate games index from PDFs
 ├── Dockerfile               # Multi-stage Docker build (Python 3.13)
 ├── docker-compose.yml       # Docker Compose configuration
 ├── .env.example             # Example environment variables
@@ -174,6 +182,7 @@ See [.env.example](../.env.example) for configuration options:
 - `LANGFUSE_BASE_URL` - Langfuse API endpoint (default: `https://cloud.langfuse.com`)
 - `ENABLE_TRACING` - Enable OpenTelemetry tracing to Langfuse (default: `false`)
 - `LANGFUSE_ENVIRONMENT` - Environment name for Langfuse traces (default: `production`)
+- `BGG_API_TOKEN` - BoardGameGeek API token for auto-generating game metadata (optional, see [BGG_API_SETUP.md](BGG_API_SETUP.md))
 
 ---
 
