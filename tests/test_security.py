@@ -83,3 +83,17 @@ async def test_read_full_document_rejects_traversal(mock_settings):
 
     with _pytest.raises(ValueError):
         _safe_pdf_path("../../etc/passwd")
+
+
+@_pytest.mark.asyncio
+async def test_search_inside_file_wraps_output_in_sandbox_tags(mock_settings, sample_pdf):
+    """search_inside_file_ugrep wraps result in <tool_output> tags."""
+    from src.rules_lawyer_bot.agent.tools import _search_inside_file_ugrep_impl
+
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+    sample_pdf.rename(pdf_dir / "test.pdf")
+
+    result = await _search_inside_file_ugrep_impl("test.pdf", "anything")
+
+    assert result.startswith("<tool_output")
+    assert result.rstrip().endswith("</tool_output>")

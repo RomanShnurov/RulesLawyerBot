@@ -63,6 +63,16 @@ def _safe_pdf_path(filename: str) -> Path:
     return candidate
 
 
+def _sandbox(tool_name: str, payload: str) -> str:
+    """Wrap tool output in sandbox tags so the LLM treats content as untrusted data.
+
+    The system prompt instructs the model not to follow instructions found
+    inside <tool_output> blocks. This is a defence against prompt injection
+    via PDF content.
+    """
+    return f'<tool_output source="{tool_name}">\n{payload}\n</tool_output>'
+
+
 @function_tool
 @safe_execution
 @async_tool
@@ -232,16 +242,19 @@ async def _search_inside_file_ugrep_impl(
             logger.debug(f"ugrep output: {output}")
             if len(output) > 30000:
                 output = output[:30000] + "\n...(truncated)"
-            return output if output else "No matches found"
+            return _sandbox(
+                "search_inside_file_ugrep",
+                output if output else "No matches found",
+            )
 
         elif result.returncode == 1:
             logger.debug(f"No matches found for '{keywords}'")
-            return "No matches found"
+            return _sandbox("search_inside_file_ugrep", "No matches found")
 
         else:
             error = result.stderr.strip()
             logger.error(f"ugrep error: {error}")
-            return f"Search error: {error}"
+            return _sandbox("search_inside_file_ugrep", f"Search error: {error}")
 
 
 @function_tool
@@ -338,7 +351,7 @@ async def parallel_search_terms(filename: str, terms: list[str], fuzzy: bool = F
         output = json.dumps(result_dict, ensure_ascii=False, indent=2)
 
         logger.info(f"Parallel search completed: {len(result_dict)} results")
-        return output
+        return _sandbox("parallel_search_terms", output)
 
 
 @function_tool
@@ -373,7 +386,7 @@ def read_full_document(filename: str) -> str:
         if len(full_text) > 100000:
             full_text = full_text[:100000] + "\n...(truncated at 100k chars)"
 
-        return full_text
+        return _sandbox("read_full_document", full_text)
 
 
 @function_tool
