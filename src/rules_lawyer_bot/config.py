@@ -56,6 +56,12 @@ class Settings(BaseSettings):
         description="Logging level (DEBUG, INFO, WARNING, ERROR)"
     )
 
+    # BoardGameGeek API
+    bgg_api_token: str = Field(
+        default="",
+        description="BoardGameGeek API token (optional)"
+    )
+
     # Langfuse Observability
     langfuse_public_key: str = Field(
         default="",

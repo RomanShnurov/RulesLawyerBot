@@ -39,6 +39,30 @@ def async_tool(func: F) -> F:
     return wrapper
 
 
+def _safe_pdf_path(filename: str) -> Path:
+    """Validate filename and resolve to absolute path inside pdf_storage_path.
+
+    Protects against path traversal attacks (`../`, absolute paths) and
+    non-PDF files. Resolves symlinks before checking containment.
+
+    Args:
+        filename: User-supplied PDF filename (basename, no directory).
+
+    Returns:
+        Resolved absolute Path inside pdf_storage_path.
+
+    Raises:
+        ValueError: If filename escapes pdf_storage_path or is not a .pdf.
+    """
+    base = Path(settings.pdf_storage_path).resolve()
+    candidate = (base / filename).resolve()
+    if not candidate.is_relative_to(base):
+        raise ValueError(f"Invalid filename: {filename!r}")
+    if candidate.suffix.lower() != ".pdf":
+        raise ValueError(f"Invalid filename: {filename!r}")
+    return candidate
+
+
 @function_tool
 @safe_execution
 @async_tool
