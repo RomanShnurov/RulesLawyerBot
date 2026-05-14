@@ -8,7 +8,8 @@ import json
 import re
 
 from agents import Runner
-from openai import APIConnectionError, APITimeoutError, RateLimitError
+from agents.exceptions import MaxTurnsExceeded
+from openai import APIConnectionError, APITimeoutError
 from pydantic import ValidationError
 from tenacity import (
     AsyncRetrying,
@@ -79,7 +80,6 @@ _RETRIABLE_ERRORS = (
     ValidationError,
     APIConnectionError,
     APITimeoutError,
-    RateLimitError,
 )
 
 
@@ -88,16 +88,24 @@ RETRY_EXHAUSTED_RESPONSE = (
     "Попробуйте переформулировать вопрос."
 )
 
+MAX_TURNS_RESPONSE = (
+    "🔄 Запрос оказался слишком сложным — агент превысил лимит шагов. "
+    "Попробуйте задать более конкретный вопрос."
+)
+
+_RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=4)
+
 
 async def _run_agent_with_retry(agent, agent_input: str, session):
     """Run the agent with bounded retries on transient/structured failures.
 
     Retries on ValidationError (LLM returned malformed JSON) and OpenAI
     network errors. Business errors propagate immediately.
+    MaxTurnsExceeded is not retried — it propagates to the caller.
     """
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=4),
+        wait=_RETRY_WAIT,
         retry=retry_if_exception_type(_RETRIABLE_ERRORS),
         reraise=True,
     ):
@@ -199,6 +207,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         agent_input=agent_input,
                         session=session,
                     )
+                except MaxTurnsExceeded:
+                    logger.warning(
+                        f"MaxTurnsExceeded for user {user.id}"
+                    )
+                    await progress.finalize()
+                    await update.message.reply_text(MAX_TURNS_RESPONSE)
+                    return MAX_TURNS_RESPONSE
                 except _RETRIABLE_ERRORS as e:
                     # With tenacity reraise=True, the last retriable error
                     # propagates here after attempts are exhausted.

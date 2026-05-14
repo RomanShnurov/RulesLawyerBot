@@ -3,8 +3,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
+from tenacity import wait_none
 
 from src.rules_lawyer_bot.handlers.messages import _run_agent_with_retry
+
+
+@pytest.fixture(autouse=True)
+def _fast_retry(monkeypatch):
+    """Replace exponential wait with no-wait for test speed."""
+    monkeypatch.setattr(
+        "src.rules_lawyer_bot.handlers.messages._RETRY_WAIT",
+        wait_none(),
+    )
 
 
 @pytest.mark.asyncio
@@ -91,6 +101,59 @@ async def test_retry_exhausted_raises_final_error():
             await _run_agent_with_retry(
                 agent=MagicMock(), agent_input="q", session=MagicMock()
             )
+
+
+@pytest.mark.asyncio
+async def test_retry_on_validation_error_from_stream():
+    """ValidationError raised from stream_events() is retried (the real path)."""
+    call_count = {"n": 0}
+
+    def _make_stream_result():
+        call_count["n"] += 1
+
+        async def _stream():
+            if call_count["n"] < 3:
+                raise _make_validation_error()
+            return
+            yield  # makes this an async generator
+
+        result = MagicMock()
+        result.stream_events = _stream
+        result.new_items = []
+        result.final_output = "ok"
+        return result
+
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner") as MockRunner:
+        MockRunner.run_streamed.side_effect = lambda *a, **k: _make_stream_result()
+
+        result = await _run_agent_with_retry(
+            agent=MagicMock(), agent_input="q", session=MagicMock()
+        )
+
+        assert call_count["n"] == 3
+        assert result.final_output == "ok"
+
+
+@pytest.mark.asyncio
+async def test_max_turns_exceeded_not_retried():
+    """MaxTurnsExceeded propagates without retry."""
+    from agents.exceptions import MaxTurnsExceeded
+
+    call_count = {"n": 0}
+
+    def _fake_stream(*_args, **_kwargs):
+        call_count["n"] += 1
+        raise MaxTurnsExceeded("max turns")
+
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner") as MockRunner:
+        MockRunner.run_streamed.side_effect = _fake_stream
+
+        with pytest.raises(MaxTurnsExceeded):
+            await _run_agent_with_retry(
+                agent=MagicMock(), agent_input="q", session=MagicMock()
+            )
+
+        assert call_count["n"] == 1
 
 
 def _make_validation_error() -> ValidationError:
