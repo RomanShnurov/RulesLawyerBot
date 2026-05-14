@@ -76,6 +76,9 @@ def _check_blocklist(text: str) -> bool:
     return bool(_BLOCKLIST_REGEX.search(text))
 
 
+# RateLimitError intentionally omitted: a 1-4s exponential backoff is too
+# short to clear a real rate limit, and we lack Retry-After header parsing.
+# Better to fail fast and let the user retry manually.
 _RETRIABLE_ERRORS = (
     ValidationError,
     APIConnectionError,
@@ -118,6 +121,10 @@ async def _run_agent_with_retry(agent, agent_input: str, session):
             )
             # Drain the stream so any ValidationError surfaces here, inside
             # the retry attempt, rather than later in the caller.
+            # This means live tool-call progress is no longer reported during
+            # the run — events are replayed from `result.new_items` after
+            # completion.  This is a deliberate tradeoff to enable retry on
+            # structured-output ValidationError.
             async for _event in result.stream_events():
                 pass
             return result

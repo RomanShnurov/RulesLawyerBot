@@ -1,4 +1,5 @@
 """Tests for path traversal protection in agent tools."""
+import json
 from pathlib import Path
 
 import pytest
@@ -59,33 +60,40 @@ def test_safe_pdf_path_case_insensitive_extension(mock_settings):
     assert result.suffix.lower() == ".pdf"
 
 
-import pytest as _pytest
-
-
-@_pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_search_inside_file_ugrep_rejects_traversal(mock_settings):
     """search_inside_file_ugrep rejects traversal filename before reaching subprocess."""
     from src.rules_lawyer_bot.agent.tools import _search_inside_file_ugrep_impl
 
     # _search_inside_file_ugrep_impl has no @safe_execution decorator, so the
     # ValueError from _safe_pdf_path propagates raw — we must catch it here.
-    with _pytest.raises(ValueError, match="Invalid filename"):
+    with pytest.raises(ValueError, match="Invalid filename"):
         await _search_inside_file_ugrep_impl("../../etc/passwd", "root")
 
 
-@_pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_read_full_document_rejects_traversal(mock_settings):
-    """read_full_document rejects traversal filename."""
-    # We invoke the inner sync logic directly. The @function_tool wrapper
-    # is not directly callable, so we exercise the public Path validation
-    # through _safe_pdf_path called from within.
-    from src.rules_lawyer_bot.agent.tools import _safe_pdf_path
+    """read_full_document integration: traversal filename triggers safe-execution error path.
 
-    with _pytest.raises(ValueError):
-        _safe_pdf_path("../../etc/passwd")
+    Calls read_full_document.on_invoke_tool — the same entry-point the agents
+    framework uses at runtime — with a path-traversal filename.  _safe_pdf_path
+    raises ValueError, which @safe_execution catches and converts to the generic
+    "Something went wrong" string.  If someone replaced _safe_pdf_path with a
+    bare Path join, the FileNotFoundError handler would fire instead and the
+    assertion below would fail, catching the regression.
+    """
+    from src.rules_lawyer_bot.agent.tools import read_full_document
+
+    result = await read_full_document.on_invoke_tool(
+        None, json.dumps({"filename": "../../etc/passwd"})
+    )
+
+    # @safe_execution converts ValueError (from _safe_pdf_path) to the generic
+    # error message.  A bare Path join would produce "📁 File not found" instead.
+    assert "Something went wrong" in result
 
 
-@_pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_search_inside_file_wraps_output_in_sandbox_tags(mock_settings, sample_pdf):
     """search_inside_file_ugrep wraps result in <tool_output> tags."""
     from src.rules_lawyer_bot.agent.tools import _search_inside_file_ugrep_impl
