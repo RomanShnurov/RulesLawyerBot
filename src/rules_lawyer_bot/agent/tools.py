@@ -2,13 +2,13 @@
 
 import asyncio
 import json
+import re as _re
 import subprocess
 from functools import wraps
 from pathlib import Path
 from typing import Callable, TypeVar
 
 from agents import function_tool
-from pypdf import PdfReader
 
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.utils.logger import logger
@@ -100,6 +100,55 @@ def _get_pdf_text_cache(pdf_path: Path) -> Path:
         )
 
     return cache_path
+
+
+def _annotate_with_pages(
+    cache_path: Path,
+    ugrep_output: str,
+    context_lines: int = 10,
+    max_results: int = 30,
+) -> list[dict]:
+    """Parse ugrep output (`-bn` format) and emit per-page excerpts.
+
+    Args:
+        cache_path: Path to the cached PDF text file.
+        ugrep_output: stdout from `ugrep -bn ...` — lines of form
+            `<line_no>:<byte_offset>:<line_text>`.
+        context_lines: Number of lines to include before/after each match.
+        max_results: Cap to avoid unbounded output.
+
+    Returns:
+        List of {"page": int, "excerpt": str} dicts, deduped by line number.
+    """
+    text_bytes = cache_path.read_bytes()
+    text_lines = cache_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    results: list[dict] = []
+    seen_lines: set[int] = set()
+
+    for line in ugrep_output.splitlines():
+        if not line or line.startswith("--"):
+            continue
+        m = _re.match(r"^(\d+):(\d+):(.*)$", line)
+        if not m:
+            continue
+        line_no = int(m.group(1))
+        byte_offset = int(m.group(2))
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+
+        page = text_bytes[:byte_offset].count(b"\f") + 1
+
+        start = max(0, line_no - context_lines - 1)
+        end = min(len(text_lines), line_no + context_lines)
+        excerpt = "\n".join(text_lines[start:end]).strip()
+
+        results.append({"page": page, "excerpt": excerpt})
+        if len(results) >= max_results:
+            break
+
+    return results
 
 
 def _sandbox(tool_name: str, payload: str) -> str:
@@ -234,66 +283,72 @@ def search_filenames(query: str) -> str:
 async def _search_inside_file_ugrep_impl(
     filename: str, keywords: str, fuzzy: bool = False
 ) -> str:
-    """Internal implementation of ugrep search.
+    """Internal implementation of ugrep search, returning sandboxed JSON.
 
-    This is the actual search logic, separated from the @function_tool wrapper
-    so it can be called directly by other functions like parallel_search_terms.
+    Separated from the @function_tool wrapper so other tools
+    (e.g. parallel_search_terms) can call it directly.
     """
     with ScopeTimer(f"search_inside_file_ugrep('{filename}', '{keywords}')"):
         pdf_path = _safe_pdf_path(filename)
         if not pdf_path.exists():
             raise FileNotFoundError(f"'{filename}'")
 
-        # Build ugrep command
-        # -%: Boolean patterns (space=AND, |=OR, -=NOT)
-        # -i: case insensitive
-        # -C20: 20 lines context (enough for rule understanding)
-        # --filter: convert PDF to text on-the-fly (stdin -> stdout)
+        cache_path = _get_pdf_text_cache(pdf_path)
+
+        # Run ugrep against the cached text with byte offsets + line numbers
         cmd = [
             "ugrep",
-            "-%",  # Boolean query mode
+            "-%",  # Boolean query mode (space=AND, |=OR, -=NOT)
             "-i",  # Case insensitive
-            "-C20",  # 20 lines of context
-            "--filter=pdf:pdftotext - -",  # PDF text extraction (stdin to stdout)
+            "-bn",  # byte offset + line number per match
+            "--no-group-separator",
             keywords,
-            str(pdf_path),
+            str(cache_path),
         ]
-
-        # Add fuzzy matching for typo tolerance
         if fuzzy:
-            cmd.insert(2, "-Z")  # Insert after -%
+            cmd.insert(2, "-Z")
 
         logger.debug("Searching with ugrep command: " + " ".join(cmd))
 
-        # Use semaphore to limit concurrent ugrep processes
         async with ugrep_semaphore:
             result = await asyncio.to_thread(
                 subprocess.run,
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30,  # Prevent hanging
+                timeout=30,
             )
 
         if result.returncode == 0:
-            output = result.stdout.strip()
-            # Truncate to avoid token overflow
-            logger.debug(f"ugrep output: {output}")
-            if len(output) > 30000:
-                output = output[:30000] + "\n...(truncated)"
-            return _sandbox(
-                "search_inside_file_ugrep",
-                output if output else "No matches found",
-            )
-
+            matches = _annotate_with_pages(cache_path, result.stdout)
+            payload = {
+                "status": "ok",
+                "data": matches,
+                "meta": {
+                    "truncated": False,
+                    "total_matches": len(matches),
+                    "shown": len(matches),
+                },
+            }
         elif result.returncode == 1:
-            logger.debug(f"No matches found for '{keywords}'")
-            return _sandbox("search_inside_file_ugrep", "No matches found")
-
+            payload = {
+                "status": "no_match",
+                "data": [],
+                "meta": {"total_matches": 0, "shown": 0},
+            }
         else:
             error = result.stderr.strip()
             logger.error(f"ugrep error: {error}")
-            return _sandbox("search_inside_file_ugrep", f"Search error: {error}")
+            payload = {
+                "status": "error",
+                "data": [],
+                "meta": {"message": error},
+            }
+
+        return _sandbox(
+            "search_inside_file_ugrep",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
 
 
 @function_tool
@@ -328,104 +383,117 @@ async def search_inside_file_ugrep(
 @function_tool
 @safe_execution
 async def parallel_search_terms(filename: str, terms: list[str], fuzzy: bool = False) -> str:
-    """Search for multiple terms in parallel within a PDF file.
+    """Search for multiple terms in parallel within a PDF.
 
-    This is more efficient than calling search_inside_file_ugrep multiple times
-    sequentially when you need to search for several distinct concepts.
-
-    Args:
-        filename: Name of the PDF file (must exist in rules_pdfs/)
-        terms: List of search terms (each can use Boolean logic like "move|teleport")
-        fuzzy: Enable fuzzy matching for all searches (default: False)
-
-    Returns:
-        JSON-formatted string with results for each term:
-        {
-            "term1": "matching text...",
-            "term2": "No matches found",
-            "term3": "Error: ...",
-            ...
-        }
-
-    Examples:
-        parallel_search_terms("game.pdf", ["movement", "attack", "defense"])
-        parallel_search_terms("game.pdf", ["move|teleport", "атак|удар", "защит"])
+    Returns sandboxed JSON: {status, data: {term: {status, data, meta}}, meta}.
+    Each per-term entry has the same shape as search_inside_file_ugrep.
     """
-    import json
-
     with ScopeTimer(f"parallel_search_terms('{filename}', {len(terms)} terms)"):
         if not terms:
-            return json.dumps({"error": "No search terms provided"})
+            return _sandbox(
+                "parallel_search_terms",
+                json.dumps(
+                    {"status": "error", "data": {}, "meta": {"message": "No terms"}},
+                    ensure_ascii=False,
+                ),
+            )
 
-        # Limit to reasonable number of parallel searches
         if len(terms) > 10:
-            logger.warning(f"Too many parallel search terms ({len(terms)}), limiting to 10")
+            logger.warning(f"Too many terms ({len(terms)}), limiting to 10")
             terms = terms[:10]
 
         logger.info(f"Launching {len(terms)} parallel searches in '{filename}'")
 
-        # Launch all searches in parallel using the internal implementation
-        # (not the @function_tool wrapper which isn't directly callable)
         tasks = [
             _search_inside_file_ugrep_impl(filename, term, fuzzy=fuzzy)
             for term in terms
         ]
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Gather results (exceptions are already handled by @safe_execution)
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Build result dictionary
-        result_dict = {}
-        for term, result in zip(terms, results):
-            if isinstance(result, Exception):
-                result_dict[term] = f"Error: {str(result)}"
+        per_term: dict[str, dict] = {}
+        for term, raw in zip(terms, raw_results):
+            if isinstance(raw, Exception):
+                per_term[term] = {
+                    "status": "error",
+                    "data": [],
+                    "meta": {"message": str(raw)},
+                }
             else:
-                # Truncate individual results to avoid huge outputs
-                if len(str(result)) > 5000:
-                    result_dict[term] = str(result)[:5000] + "\n...(truncated)"
-                else:
-                    result_dict[term] = str(result)
+                # raw is a sandboxed JSON string; unwrap and parse
+                inner_start = raw.find(">\n") + 2
+                inner_end = raw.rfind("\n</tool_output>")
+                try:
+                    per_term[term] = json.loads(raw[inner_start:inner_end])
+                except json.JSONDecodeError:
+                    per_term[term] = {
+                        "status": "error",
+                        "data": [],
+                        "meta": {"message": "could not parse per-term result"},
+                    }
 
-        # Return as formatted JSON for easy parsing
-        output = json.dumps(result_dict, ensure_ascii=False, indent=2)
+        payload = {
+            "status": "ok",
+            "data": per_term,
+            "meta": {"terms_searched": len(terms)},
+        }
 
-        logger.info(f"Parallel search completed: {len(result_dict)} results")
-        return _sandbox("parallel_search_terms", output)
+        return _sandbox(
+            "parallel_search_terms",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
 
 
 @function_tool
 @safe_execution
 @async_tool
 def read_full_document(filename: str) -> str:
-    """Fallback: Read entire PDF content using pypdf library.
+    """Fallback: Read entire PDF content using pdftotext cache.
 
-    Use this when ugrep fails or is unavailable.
+    Use this when ugrep fails or you need full context.
 
-    Args:
-        filename: Name of the PDF file
-
-    Returns:
-        Full text content (truncated to 100k chars) or error message
+    Returns sandboxed JSON: {status, data: [{page, text}], meta}.
     """
     with ScopeTimer(f"read_full_document('{filename}')"):
         pdf_path = _safe_pdf_path(filename)
         if not pdf_path.exists():
             raise FileNotFoundError(f"'{filename}'")
 
-        reader = PdfReader(pdf_path)
-        text_parts = []
+        cache_path = _get_pdf_text_cache(pdf_path)
+        full_text = cache_path.read_text(encoding="utf-8", errors="replace")
+        pages_text = full_text.split("\f")
 
-        for page_num, page in enumerate(reader.pages, 1):
-            text_parts.append(f"--- Page {page_num} ---\n")
-            text_parts.append(page.extract_text())
+        # Build per-page data; truncate aggressively to avoid context overflow
+        data = [
+            {"page": i + 1, "text": text}
+            for i, text in enumerate(pages_text)
+            if text.strip()
+        ]
 
-        full_text = "\n".join(text_parts)
+        # Soft cap: keep at most 100k chars total across pages
+        total_chars = 0
+        truncated = False
+        kept: list[dict] = []
+        for entry in data:
+            if total_chars + len(entry["text"]) > 100_000:
+                truncated = True
+                break
+            kept.append(entry)
+            total_chars += len(entry["text"])
 
-        # Truncate to avoid context overflow
-        if len(full_text) > 100000:
-            full_text = full_text[:100000] + "\n...(truncated at 100k chars)"
+        payload = {
+            "status": "ok",
+            "data": kept,
+            "meta": {
+                "truncated": truncated,
+                "total_pages": len(data),
+                "shown_pages": len(kept),
+            },
+        }
 
-        return _sandbox("read_full_document", full_text)
+        return _sandbox(
+            "read_full_document",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
 
 
 @function_tool

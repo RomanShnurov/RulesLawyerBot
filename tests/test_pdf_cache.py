@@ -90,3 +90,68 @@ def test_cache_dir_created_if_missing(mock_settings):
     _get_pdf_text_cache(pdf_path)
 
     assert cache_dir.is_dir()
+
+
+import json as _json
+
+
+@pytest.mark.asyncio
+async def test_search_returns_page_numbers(mock_settings):
+    """search_inside_file_ugrep returns page numbers in its JSON output."""
+    from src.rules_lawyer_bot.agent.tools import _search_inside_file_ugrep_impl
+
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+    pdf_path = pdf_dir / "story.pdf"
+    _make_pdf(pdf_path, num_pages=3)
+
+    # Pre-populate the cache so we control the page content exactly
+    cache_dir = pdf_dir / ".cache"
+    cache_dir.mkdir(exist_ok=True)
+    cache_path = cache_dir / "story.pdf.txt"
+    cache_path.write_text(
+        "Page one talks about attack rules.\fPage two covers defense.\fPage three is end of game.\f",
+        encoding="utf-8",
+    )
+
+    # Make the cache newer than the PDF so it is used
+    future = time.time() + 60
+    os.utime(cache_path, (future, future))
+
+    result_raw = await _search_inside_file_ugrep_impl("story.pdf", "defense")
+
+    # Result is wrapped by _sandbox; extract JSON payload
+    assert result_raw.startswith("<tool_output")
+    inner_start = result_raw.find(">\n") + 2
+    inner_end = result_raw.rfind("\n</tool_output>")
+    payload = _json.loads(result_raw[inner_start:inner_end])
+
+    assert payload["status"] == "ok"
+    assert len(payload["data"]) >= 1
+    match = payload["data"][0]
+    assert match["page"] == 2
+    assert "defense" in match["excerpt"].lower()
+
+
+@pytest.mark.asyncio
+async def test_search_no_match_returns_empty_data(mock_settings):
+    """No matches yields status=no_match and empty data."""
+    from src.rules_lawyer_bot.agent.tools import _search_inside_file_ugrep_impl
+
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+    pdf_path = pdf_dir / "story.pdf"
+    _make_pdf(pdf_path, num_pages=1)
+
+    cache_dir = pdf_dir / ".cache"
+    cache_dir.mkdir(exist_ok=True)
+    cache_path = cache_dir / "story.pdf.txt"
+    cache_path.write_text("nothing relevant here", encoding="utf-8")
+    future = time.time() + 60
+    os.utime(cache_path, (future, future))
+
+    result_raw = await _search_inside_file_ugrep_impl("story.pdf", "nonexistentterm")
+    inner_start = result_raw.find(">\n") + 2
+    inner_end = result_raw.rfind("\n</tool_output>")
+    payload = _json.loads(result_raw[inner_start:inner_end])
+
+    assert payload["status"] == "no_match"
+    assert payload["data"] == []
