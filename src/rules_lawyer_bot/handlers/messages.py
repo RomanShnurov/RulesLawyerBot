@@ -8,6 +8,14 @@ import json
 import re
 
 from agents import Runner
+from openai import APIConnectionError, APITimeoutError, RateLimitError
+from pydantic import ValidationError
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -65,6 +73,46 @@ def _check_blocklist(text: str) -> bool:
         True if message should be blocked, False otherwise
     """
     return bool(_BLOCKLIST_REGEX.search(text))
+
+
+_RETRIABLE_ERRORS = (
+    ValidationError,
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+)
+
+
+RETRY_EXHAUSTED_RESPONSE = (
+    "⚠️ Не удалось обработать запрос. "
+    "Попробуйте переформулировать вопрос."
+)
+
+
+async def _run_agent_with_retry(agent, agent_input: str, session):
+    """Run the agent with bounded retries on transient/structured failures.
+
+    Retries on ValidationError (LLM returned malformed JSON) and OpenAI
+    network errors. Business errors propagate immediately.
+    """
+    async for attempt in AsyncRetrying(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=4),
+        retry=retry_if_exception_type(_RETRIABLE_ERRORS),
+        reraise=True,
+    ):
+        with attempt:
+            result = Runner.run_streamed(
+                starting_agent=agent,
+                input=agent_input,
+                session=session,
+                max_turns=8,
+            )
+            # Drain the stream so any ValidationError surfaces here, inside
+            # the retry attempt, rather than later in the caller.
+            async for _event in result.stream_events():
+                pass
+            return result
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -142,40 +190,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             session = get_user_session(user.id)
             logger.debug("[Perf] Session loaded, starting agent run")
 
-            # Run agent with streaming to show progress
+            # Run agent with streaming + bounded retries
             async with ugrep_semaphore:
-                logger.debug("[Perf] Acquired ugrep semaphore, calling Runner.run_streamed")
-                result = Runner.run_streamed(
-                    starting_agent=rules_agent, input=agent_input, session=session
-                )
-                logger.debug("[Perf] Runner.run_streamed returned, waiting for first event")
+                logger.debug("[Perf] Acquired ugrep semaphore, calling _run_agent_with_retry")
+                try:
+                    result = await _run_agent_with_retry(
+                        agent=rules_agent,
+                        agent_input=agent_input,
+                        session=session,
+                    )
+                except _RETRIABLE_ERRORS as e:
+                    # With tenacity reraise=True, the last retriable error
+                    # propagates here after attempts are exhausted.
+                    logger.warning(
+                        f"Retry exhausted for user {user.id}: {type(e).__name__}"
+                    )
+                    await progress.finalize()
+                    await update.message.reply_text(RETRY_EXHAUSTED_RESPONSE)
+                    return RETRY_EXHAUSTED_RESPONSE
 
-                # Process streaming events
-                event_count = 0
-                async for event in result.stream_events():
-                    event_count += 1
-                    if event_count == 1:
-                        logger.debug(f"[Perf] First event received: {event.type}")
-
-                    if event.type == "run_item_stream_event":
-                        item = event.item
-                        if item.type == "tool_call_item":
-                            # Extract tool name and arguments
-                            tool_name = getattr(item, "name", None)
-                            if tool_name is None and hasattr(item, "raw_item"):
-                                tool_name = getattr(item.raw_item, "name", "unknown")
-
-                            # Extract arguments if available
-                            args = None
-                            if hasattr(item, "raw_item") and hasattr(item.raw_item, "arguments"):
-                                try:
-                                    args = json.loads(item.raw_item.arguments)
-                                except (json.JSONDecodeError, TypeError):
-                                    pass
-
-                            logger.debug(f"[Perf] Tool call event received: {tool_name}")
-                            await progress.report_tool_call(tool_name, args)
-                            logger.debug(f"Tool called: {tool_name}")
+                # Replay progress events from completed stream (we drained it
+                # inside _run_agent_with_retry to surface ValidationError;
+                # for live progress reporting we now iterate result.new_items).
+                for item in result.new_items:
+                    if item.type == "tool_call_item":
+                        tool_name = getattr(item, "name", None)
+                        if tool_name is None and hasattr(item, "raw_item"):
+                            tool_name = getattr(item.raw_item, "name", "unknown")
+                        args = None
+                        if hasattr(item, "raw_item") and hasattr(item.raw_item, "arguments"):
+                            try:
+                                args = json.loads(item.raw_item.arguments)
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                        await progress.report_tool_call(tool_name, args)
 
             # Force final update before response
             await progress.force_update()
