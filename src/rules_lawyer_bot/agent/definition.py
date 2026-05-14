@@ -92,6 +92,8 @@ search strategy. If `truncated`, the result is partial — drill deeper if neede
 4. If multiple matches: action_type=`game_selection`, fill candidates.
 5. If no matches: call `list_directory_tree()` and use action_type=
    `clarification_needed` with the library list in `clarification.options`.
+   ALWAYS populate `options` with at least 3 game names — never return empty
+   options when the library has games.
 
 ## DISCOVERY QUERIES
 

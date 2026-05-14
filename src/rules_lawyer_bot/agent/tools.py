@@ -92,12 +92,30 @@ def _get_pdf_text_cache(pdf_path: Path) -> Path:
 
     if needs_regen:
         logger.debug(f"Generating PDF text cache: {cache_path}")
-        subprocess.run(
-            ["pdftotext", "-layout", str(pdf_path), str(cache_path)],
-            check=True,
-            capture_output=True,
-            timeout=60,
-        )
+        # Write to a temp file then rename atomically to avoid torn reads
+        # under concurrent access.
+        import tempfile
+        import os as _os
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".tmp",
+            dir=str(cache_dir),
+            delete=False,
+            encoding="utf-8",
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            subprocess.run(
+                ["pdftotext", "-layout", str(pdf_path), str(tmp_path)],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            # os.replace is atomic on both POSIX and Windows (within same fs)
+            _os.replace(str(tmp_path), str(cache_path))
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     return cache_path
 
@@ -121,7 +139,8 @@ def _annotate_with_pages(
         List of {"page": int, "excerpt": str} dicts, deduped by line number.
     """
     text_bytes = cache_path.read_bytes()
-    text_lines = cache_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    text = text_bytes.decode("utf-8", errors="replace")
+    text_lines = text.splitlines()
 
     results: list[dict] = []
     seen_lines: set[int] = set()
@@ -424,7 +443,10 @@ async def parallel_search_terms(filename: str, terms: list[str], fuzzy: bool = F
                 inner_end = raw.rfind("\n</tool_output>")
                 try:
                     per_term[term] = json.loads(raw[inner_start:inner_end])
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    logger.warning(
+                        f"parallel_search_terms: failed to parse sandboxed result for term '{term}': {e}"
+                    )
                     per_term[term] = {
                         "status": "error",
                         "data": [],

@@ -27,7 +27,7 @@ from src.rules_lawyer_bot.pipeline.handler import handle_pipeline_output
 from src.rules_lawyer_bot.pipeline.state import get_conversation_state
 from src.rules_lawyer_bot.utils.logger import logger
 from src.rules_lawyer_bot.utils.progress_reporter import ProgressReporter
-from src.rules_lawyer_bot.utils.safety import rate_limiter, ugrep_semaphore
+from src.rules_lawyer_bot.utils.safety import rate_limiter
 from src.rules_lawyer_bot.utils.telegram_helpers import send_long_message
 
 # Blocklist patterns to prevent prompt injection and off-topic abuse
@@ -206,46 +206,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.debug("[Perf] Session loaded, starting agent run")
 
             # Run agent with streaming + bounded retries
-            async with ugrep_semaphore:
-                logger.debug("[Perf] Acquired ugrep semaphore, calling _run_agent_with_retry")
-                try:
-                    result = await _run_agent_with_retry(
-                        agent=rules_agent,
-                        agent_input=agent_input,
-                        session=session,
-                    )
-                except MaxTurnsExceeded:
-                    logger.warning(
-                        f"MaxTurnsExceeded for user {user.id}"
-                    )
-                    await progress.finalize()
-                    await update.message.reply_text(MAX_TURNS_RESPONSE)
-                    return MAX_TURNS_RESPONSE
-                except _RETRIABLE_ERRORS as e:
-                    # With tenacity reraise=True, the last retriable error
-                    # propagates here after attempts are exhausted.
-                    logger.warning(
-                        f"Retry exhausted for user {user.id}: {type(e).__name__}"
-                    )
-                    await progress.finalize()
-                    await update.message.reply_text(RETRY_EXHAUSTED_RESPONSE)
-                    return RETRY_EXHAUSTED_RESPONSE
+            logger.debug("[Perf] Starting agent run with _run_agent_with_retry")
+            try:
+                result = await _run_agent_with_retry(
+                    agent=rules_agent,
+                    agent_input=agent_input,
+                    session=session,
+                )
+            except MaxTurnsExceeded:
+                logger.warning(
+                    f"MaxTurnsExceeded for user {user.id}"
+                )
+                await progress.finalize()
+                await update.message.reply_text(MAX_TURNS_RESPONSE)
+                return MAX_TURNS_RESPONSE
+            except _RETRIABLE_ERRORS as e:
+                # With tenacity reraise=True, the last retriable error
+                # propagates here after attempts are exhausted.
+                logger.warning(
+                    f"Retry exhausted for user {user.id}: {type(e).__name__}"
+                )
+                await progress.finalize()
+                await update.message.reply_text(RETRY_EXHAUSTED_RESPONSE)
+                return RETRY_EXHAUSTED_RESPONSE
 
-                # Replay progress events from completed stream (we drained it
-                # inside _run_agent_with_retry to surface ValidationError;
-                # for live progress reporting we now iterate result.new_items).
-                for item in result.new_items:
-                    if item.type == "tool_call_item":
-                        tool_name = getattr(item, "name", None)
-                        if tool_name is None and hasattr(item, "raw_item"):
-                            tool_name = getattr(item.raw_item, "name", "unknown")
-                        args = None
-                        if hasattr(item, "raw_item") and hasattr(item.raw_item, "arguments"):
-                            try:
-                                args = json.loads(item.raw_item.arguments)
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                        await progress.report_tool_call(tool_name, args)
+            # Replay progress events from completed stream (we drained it
+            # inside _run_agent_with_retry to surface ValidationError;
+            # for live progress reporting we now iterate result.new_items).
+            for item in result.new_items:
+                if item.type == "tool_call_item":
+                    tool_name = getattr(item, "name", None)
+                    if tool_name is None and hasattr(item, "raw_item"):
+                        tool_name = getattr(item.raw_item, "name", "unknown")
+                    args = None
+                    if hasattr(item, "raw_item") and hasattr(item.raw_item, "arguments"):
+                        try:
+                            args = json.loads(item.raw_item.arguments)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    await progress.report_tool_call(tool_name, args)
 
             # Force final update before response
             await progress.force_update()
