@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from agents import function_tool
+from rapidfuzz import fuzz
 
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.utils.logger import logger
@@ -184,25 +185,17 @@ def _sandbox(tool_name: str, payload: str) -> str:
 @safe_execution
 @async_tool
 def find_game_by_name(query: str) -> str:
-    """Find game information by Russian or English name using the games index.
+    """Find game information by Russian or English name using fuzzy matching.
 
-    This tool searches through games_index.json to match game names in any language.
-    It's more reliable than search_filenames() for multilingual queries.
+    Uses rapidfuzz.token_set_ratio for tolerance to typos, word reordering,
+    and partial matches. Threshold is 65/100. Results are sorted by
+    confidence DESC and include the `confidence` field (score / 100).
 
     Args:
         query: Game name in Russian, English, or transliteration
 
     Returns:
-        JSON string with matching game(s) information:
-        - english_name: Official English name
-        - russian_names: List of known Russian variants
-        - pdf_files: Associated PDF files
-        - tags: Game categories/mechanics
-
-    Examples:
-        find_game_by_name("Мёртвые клетки")  # Returns Dead Cells info
-        find_game_by_name("Dead Cells")       # Returns Dead Cells info
-        find_game_by_name("wingspan")         # Returns Wingspan info (if exists)
+        JSON string with matching game(s) information including confidence.
     """
     with ScopeTimer(f"find_game_by_name('{query}')"):
         index_path = Path(settings.pdf_storage_path) / "games_index.json"
@@ -225,42 +218,44 @@ def find_game_by_name(query: str) -> str:
                 "error": f"Failed to load games index: {str(e)}"
             }, ensure_ascii=False)
 
-        query_lower = query.lower().strip()
-        matches = []
+        query_stripped = query.strip()
+        threshold = 65
 
+        scored: list[tuple[dict, int]] = []
         for game in index_data.get("games", []):
-            # Check English name
-            if query_lower in game["english_name"].lower():
-                matches.append(game)
-                continue
+            names = [game["english_name"]] + game.get("russian_names", [])
+            best = max(
+                (fuzz.token_set_ratio(query_stripped, name) for name in names),
+                default=0,
+            )
+            if best >= threshold:
+                scored.append((game, best))
 
-            # Check Russian names
-            for ru_name in game.get("russian_names", []):
-                if query_lower in ru_name.lower():
-                    matches.append(game)
-                    break
+        scored.sort(key=lambda x: x[1], reverse=True)
 
-        if not matches:
+        if not scored:
             return json.dumps({
                 "found": False,
                 "query": query,
                 "suggestion": "Try search_filenames() or list_directory_tree()"
             }, ensure_ascii=False)
 
-        if len(matches) == 1:
-            result = {
-                "found": True,
-                "match_type": "exact",
-                "game": matches[0]
-            }
-        else:
-            result = {
-                "found": True,
-                "match_type": "multiple",
-                "games": matches
-            }
+        def _with_confidence(game: dict, score: int) -> dict:
+            return {**game, "confidence": round(score / 100, 2)}
 
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        if len(scored) == 1:
+            game, score = scored[0]
+            return json.dumps({
+                "found": True,
+                "match_type": "exact" if score >= 90 else "fuzzy",
+                "game": _with_confidence(game, score),
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "found": True,
+            "match_type": "multiple",
+            "games": [_with_confidence(g, s) for g, s in scored],
+        }, ensure_ascii=False, indent=2)
 
 
 @function_tool

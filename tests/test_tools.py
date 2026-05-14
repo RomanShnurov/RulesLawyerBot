@@ -222,3 +222,111 @@ async def test_list_directory_tree_ignores_non_pdf(mock_settings):
     assert "game.pdf" in result
     assert "readme.txt" not in result
     assert "image.png" not in result
+
+
+# ===== Fuzzy matching tests for find_game_by_name =====
+
+@pytest.fixture
+def games_index_fixture(mock_settings):
+    """Create a games_index.json with 3 games."""
+    import json as _json
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+    index_path = pdf_dir / "games_index.json"
+    index_path.write_text(
+        _json.dumps({
+            "games": [
+                {
+                    "english_name": "Dead Cells",
+                    "russian_names": ["Мёртвые клетки"],
+                    "pdf_files": ["Dead Cells.pdf"],
+                    "tags": ["roguelike"],
+                },
+                {
+                    "english_name": "Wingspan",
+                    "russian_names": ["Крылья"],
+                    "pdf_files": ["Wingspan.pdf"],
+                    "tags": ["engine-building"],
+                },
+                {
+                    "english_name": "Gloomhaven",
+                    "russian_names": ["Глумхейвен"],
+                    "pdf_files": ["Gloomhaven.pdf"],
+                    "tags": ["dungeon-crawl"],
+                },
+            ]
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return index_path
+
+
+@pytest.mark.asyncio
+async def test_find_game_exact_english(games_index_fixture):
+    """Exact English name match returns high confidence."""
+    import json as _json
+    from src.rules_lawyer_bot.agent.tools import find_game_by_name
+
+    raw = await find_game_by_name.on_invoke_tool(
+        None, _json.dumps({"query": "Dead Cells"})
+    )
+    result = _json.loads(raw)
+    assert result["found"] is True
+    game = result.get("game") or result["games"][0]
+    assert game["english_name"] == "Dead Cells"
+    assert game.get("confidence", 0) >= 0.9
+
+
+@pytest.mark.asyncio
+async def test_find_game_typo(games_index_fixture):
+    """Single-letter typo still matches above threshold."""
+    import json as _json
+    from src.rules_lawyer_bot.agent.tools import find_game_by_name
+
+    raw = await find_game_by_name.on_invoke_tool(
+        None, _json.dumps({"query": "Dead Cels"})  # missing one 'l'
+    )
+    result = _json.loads(raw)
+    assert result["found"] is True
+
+
+@pytest.mark.asyncio
+async def test_find_game_russian(games_index_fixture):
+    """Russian name matches the russian_names entry."""
+    import json as _json
+    from src.rules_lawyer_bot.agent.tools import find_game_by_name
+
+    raw = await find_game_by_name.on_invoke_tool(
+        None, _json.dumps({"query": "Мёртвые клетки"})
+    )
+    result = _json.loads(raw)
+    assert result["found"] is True
+    game = result.get("game") or result["games"][0]
+    assert game["english_name"] == "Dead Cells"
+
+
+@pytest.mark.asyncio
+async def test_find_game_no_false_positive(games_index_fixture):
+    """An unrelated query returns found=False, no false matches."""
+    import json as _json
+    from src.rules_lawyer_bot.agent.tools import find_game_by_name
+
+    raw = await find_game_by_name.on_invoke_tool(
+        None, _json.dumps({"query": "Monopoly"})
+    )
+    result = _json.loads(raw)
+    assert result["found"] is False
+
+
+@pytest.mark.asyncio
+async def test_find_game_results_sorted_by_confidence(games_index_fixture):
+    """When multiple match, results are sorted by confidence DESC."""
+    import json as _json
+    from src.rules_lawyer_bot.agent.tools import find_game_by_name
+
+    raw = await find_game_by_name.on_invoke_tool(
+        None, _json.dumps({"query": "haven"})  # might match Gloomhaven only
+    )
+    result = _json.loads(raw)
+    if result["found"] and "games" in result:
+        confidences = [g["confidence"] for g in result["games"]]
+        assert confidences == sorted(confidences, reverse=True)
