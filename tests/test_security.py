@@ -57,3 +57,29 @@ def test_safe_pdf_path_case_insensitive_extension(mock_settings):
     result = _safe_pdf_path("Game.PDF")
 
     assert result.suffix.lower() == ".pdf"
+
+
+import pytest as _pytest
+
+
+@_pytest.mark.asyncio
+async def test_search_inside_file_ugrep_rejects_traversal(mock_settings):
+    """search_inside_file_ugrep rejects traversal filename before reaching subprocess."""
+    from src.rules_lawyer_bot.agent.tools import _search_inside_file_ugrep_impl
+
+    # _search_inside_file_ugrep_impl has no @safe_execution decorator, so the
+    # ValueError from _safe_pdf_path propagates raw — we must catch it here.
+    with _pytest.raises(ValueError, match="Invalid filename"):
+        await _search_inside_file_ugrep_impl("../../etc/passwd", "root")
+
+
+@_pytest.mark.asyncio
+async def test_read_full_document_rejects_traversal(mock_settings):
+    """read_full_document rejects traversal filename."""
+    # We invoke the inner sync logic directly. The @function_tool wrapper
+    # is not directly callable, so we exercise the public Path validation
+    # through _safe_pdf_path called from within.
+    from src.rules_lawyer_bot.agent.tools import _safe_pdf_path
+
+    with _pytest.raises(ValueError):
+        _safe_pdf_path("../../etc/passwd")

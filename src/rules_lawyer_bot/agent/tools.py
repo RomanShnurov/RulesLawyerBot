@@ -191,7 +191,7 @@ async def _search_inside_file_ugrep_impl(
     so it can be called directly by other functions like parallel_search_terms.
     """
     with ScopeTimer(f"search_inside_file_ugrep('{filename}', '{keywords}')"):
-        pdf_path = Path(settings.pdf_storage_path) / filename
+        pdf_path = _safe_pdf_path(filename)
         if not pdf_path.exists():
             raise FileNotFoundError(f"'{filename}'")
 
@@ -356,7 +356,7 @@ def read_full_document(filename: str) -> str:
         Full text content (truncated to 100k chars) or error message
     """
     with ScopeTimer(f"read_full_document('{filename}')"):
-        pdf_path = Path(settings.pdf_storage_path) / filename
+        pdf_path = _safe_pdf_path(filename)
         if not pdf_path.exists():
             raise FileNotFoundError(f"'{filename}'")
 
