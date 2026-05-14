@@ -62,6 +62,12 @@ class Settings(BaseSettings):
         description="BoardGameGeek API token (optional)"
     )
 
+    # Few-shot examples (optional prompt feature)
+    enable_few_shot_examples: bool = Field(
+        default=False,
+        description="If True, inject few-shot examples into the system prompt"
+    )
+
     # Langfuse Observability
     langfuse_public_key: str = Field(
         default="",

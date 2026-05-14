@@ -25,8 +25,12 @@ from src.rules_lawyer_bot.utils.logger import logger
 # Tracing is now controlled by Langfuse instrumentation (see src/main.py)
 
 
-def create_agent() -> Agent:
+def create_agent(with_examples: bool = False) -> Agent:
     """Create the board game referee agent with tools.
+
+    Args:
+        with_examples: If True, append few-shot examples to instructions.
+            Default False (see prompts/examples.py).
 
     Returns:
         Configured Agent instance
@@ -162,6 +166,10 @@ returned only text, add a note: "📋 В правилах может быть с
 6. After 3 failed search strategies, ask the user via `search_in_progress`.
 """.strip()
 
+    if with_examples:
+        from src.rules_lawyer_bot.agent.prompts.examples import render_examples
+        instructions = instructions + "\n\n" + render_examples()
+
     agent = Agent(
         name="Board Game Referee",
         model=model,
@@ -214,13 +222,9 @@ def get_user_session(user_id: int) -> SQLiteSession:
 
 @lru_cache(maxsize=1)
 def get_rules_agent() -> Agent:
-    """Return the cached agent instance, creating it on first call.
-
-    This is the public access point. Replaces the previous import-time
-    `rules_agent = create_agent()` singleton, which made tests difficult
-    and forced agent construction on any module import.
-    """
-    return create_agent()
+    """Return the cached agent instance, creating it on first call."""
+    from src.rules_lawyer_bot.config import settings
+    return create_agent(with_examples=settings.enable_few_shot_examples)
 
 
 def _reset_agent_cache_for_tests() -> None:
