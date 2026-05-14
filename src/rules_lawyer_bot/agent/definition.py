@@ -4,6 +4,7 @@ This module implements a multi-stage conversational pipeline with
 structured outputs. The agent uses PipelineOutput to route responses
 based on conversation state (clarification, game selection, or final answer).
 """
+from functools import lru_cache
 from pathlib import Path
 
 from agents import Agent, OpenAIChatCompletionsModel, SQLiteSession
@@ -210,5 +211,18 @@ def get_user_session(user_id: int) -> SQLiteSession:
     return session
 
 
-# Global agent instance
-rules_agent = create_agent()
+
+@lru_cache(maxsize=1)
+def get_rules_agent() -> Agent:
+    """Return the cached agent instance, creating it on first call.
+
+    This is the public access point. Replaces the previous import-time
+    `rules_agent = create_agent()` singleton, which made tests difficult
+    and forced agent construction on any module import.
+    """
+    return create_agent()
+
+
+def _reset_agent_cache_for_tests() -> None:
+    """Reset the cached agent instance. Use ONLY in tests."""
+    get_rules_agent.cache_clear()

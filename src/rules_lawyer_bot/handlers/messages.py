@@ -20,7 +20,7 @@ from tenacity import (
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from src.rules_lawyer_bot.agent.definition import get_user_session, rules_agent
+from src.rules_lawyer_bot.agent.definition import get_rules_agent, get_user_session
 from src.rules_lawyer_bot.agent.schemas import PipelineOutput
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.pipeline.handler import handle_pipeline_output
@@ -209,7 +209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.debug("[Perf] Starting agent run with _run_agent_with_retry")
             try:
                 result = await _run_agent_with_retry(
-                    agent=rules_agent,
+                    agent=get_rules_agent(),
                     agent_input=agent_input,
                     session=session,
                 )
