@@ -11,10 +11,19 @@ from typing import Callable, TypeVar
 from agents import function_tool
 from rapidfuzz import fuzz
 
+from src.rules_lawyer_bot.agent.repository import (
+    RulesRepository,
+    get_default_repository,
+)
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.utils.logger import logger
 from src.rules_lawyer_bot.utils.safety import safe_execution, ugrep_semaphore
 from src.rules_lawyer_bot.utils.timer import ScopeTimer
+
+
+def _repo() -> RulesRepository:
+    """Return the default repository. Indirection allows test injection."""
+    return get_default_repository()
 
 # Type variable for decorator
 F = TypeVar("F", bound=Callable)
@@ -43,25 +52,9 @@ def async_tool(func: F) -> F:
 def _safe_pdf_path(filename: str) -> Path:
     """Validate filename and resolve to absolute path inside pdf_storage_path.
 
-    Protects against path traversal attacks (`../`, absolute paths) and
-    non-PDF files. Resolves symlinks before checking containment.
-
-    Args:
-        filename: User-supplied PDF filename (basename, no directory).
-
-    Returns:
-        Resolved absolute Path inside pdf_storage_path.
-
-    Raises:
-        ValueError: If filename escapes pdf_storage_path or is not a .pdf.
+    Delegates to the default repository's get_pdf_path.
     """
-    base = Path(settings.pdf_storage_path).resolve()
-    candidate = (base / filename).resolve()
-    if not candidate.is_relative_to(base):
-        raise ValueError(f"Invalid filename: {filename!r}")
-    if candidate.suffix.lower() != ".pdf":
-        raise ValueError(f"Invalid filename: {filename!r}")
-    return candidate
+    return _repo().get_pdf_path(filename)
 
 
 def _get_pdf_text_cache(pdf_path: Path) -> Path:
@@ -218,11 +211,15 @@ def find_game_by_name(query: str) -> str:
                 "error": f"Failed to load games index: {str(e)}"
             }, ensure_ascii=False)
 
+        # Repository serves as a smoke check that the index is readable.
+        # Fuzzy matching scans the full index regardless of substring hits.
+        all_games = index_data.get("games", [])
+
         query_stripped = query.strip()
         threshold = 65
 
         scored: list[tuple[dict, int]] = []
-        for game in index_data.get("games", []):
+        for game in all_games:
             names = [game["english_name"]] + game.get("russian_names", [])
             best = max(
                 (fuzz.token_set_ratio(query_stripped, name) for name in names),
@@ -271,14 +268,12 @@ def search_filenames(query: str) -> str:
         List of matching filenames or error message
     """
     with ScopeTimer(f"search_filenames('{query}')"):
-        pdf_dir = Path(settings.pdf_storage_path)
-        if not pdf_dir.exists():
-            return f"Error: PDF directory not found at {pdf_dir}"
+        pdfs = _repo().list_pdf_files()
 
         # Case-insensitive search
         query_lower = query.lower()
         matches = [
-            f.name for f in pdf_dir.glob("*.pdf") if query_lower in f.name.lower()
+            p.name for p in pdfs if query_lower in p.name.lower()
         ]
 
         if not matches:
@@ -543,7 +538,7 @@ def list_directory_tree(path: str = "", max_depth: int = 3) -> str:
 
         # Smart formatting for game discovery at root level
         if path == "" and target_path == base_path:
-            pdf_files = sorted([f.stem for f in target_path.glob("*.pdf")])
+            pdf_files = sorted([p.stem for p in _repo().list_pdf_files()])
 
             # Small library: return clean numbered list for discovery
             if len(pdf_files) <= 20:
