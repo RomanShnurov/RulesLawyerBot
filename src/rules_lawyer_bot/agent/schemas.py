@@ -10,7 +10,7 @@ to handle different stages: game selection, clarification, search, and final ans
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ActionType(str, Enum):
@@ -116,7 +116,10 @@ class PipelineOutput(BaseModel):
     """Unified output schema for multi-stage SGR pipeline.
 
     Uses action_type as discriminator to route bot responses.
-    This avoids Union types which can cause JSON schema issues.
+    The @model_validator enforces that the populated fields match
+    the action_type — LLM cannot return FINAL_ANSWER without
+    final_answer, etc. ValidationError triggers automatic retry
+    via the pipeline (see handlers/messages.py).
     """
 
     # Discriminator field - determines how bot handles the output
@@ -127,22 +130,22 @@ class PipelineOutput(BaseModel):
     # Stage 1: Game identification result
     game_identification: Optional[GameIdentification] = Field(
         default=None,
-        description="Game identification result (populated for all action types except clarification_needed when game unknown)",
+        description="Game identification result (required for game_selection; optional for final_answer)",
     )
 
-    # Clarification request (when action_type is clarification_needed or game_selection)
+    # Clarification request (required when action_type is clarification_needed or game_selection)
     clarification: Optional[ClarificationRequest] = Field(
         default=None,
         description="Clarification request details (required when action_type is clarification_needed or game_selection)",
     )
 
-    # Stage 3: Search progress (when action_type is search_in_progress)
+    # Stage 3: Search progress (required when action_type is search_in_progress)
     search_progress: Optional[SearchProgress] = Field(
         default=None,
         description="Search progress info (required when action_type is search_in_progress)",
     )
 
-    # Stage 4: Final answer (when action_type is final_answer)
+    # Stage 4: Final answer (required when action_type is final_answer)
     final_answer: Optional[FinalAnswer] = Field(
         default=None,
         description="Complete formatted answer (required when action_type is final_answer)",
@@ -152,3 +155,36 @@ class PipelineOutput(BaseModel):
     stage_reasoning: str = Field(
         description="Explanation of current stage decision and next steps"
     )
+
+    @model_validator(mode="after")
+    def _enforce_action_type_invariants(self) -> "PipelineOutput":
+        """Reject combinations where action_type does not match populated fields."""
+        if self.action_type == ActionType.CLARIFICATION_NEEDED:
+            if self.clarification is None:
+                raise ValueError(
+                    "action_type=clarification_needed requires 'clarification' field"
+                )
+        elif self.action_type == ActionType.GAME_SELECTION:
+            if self.clarification is None:
+                raise ValueError(
+                    "action_type=game_selection requires 'clarification' field"
+                )
+            if self.game_identification is None:
+                raise ValueError(
+                    "action_type=game_selection requires 'game_identification' field"
+                )
+            if not self.game_identification.candidates:
+                raise ValueError(
+                    "action_type=game_selection requires non-empty 'game_identification.candidates'"
+                )
+        elif self.action_type == ActionType.SEARCH_IN_PROGRESS:
+            if self.search_progress is None:
+                raise ValueError(
+                    "action_type=search_in_progress requires 'search_progress' field"
+                )
+        elif self.action_type == ActionType.FINAL_ANSWER:
+            if self.final_answer is None:
+                raise ValueError(
+                    "action_type=final_answer requires 'final_answer' field"
+                )
+        return self
