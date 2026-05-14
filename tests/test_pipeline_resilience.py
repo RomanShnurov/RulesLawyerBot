@@ -156,6 +156,59 @@ async def test_max_turns_exceeded_not_retried():
         assert call_count["n"] == 1
 
 
+@pytest.mark.asyncio
+async def test_schema_violation_triggers_retry():
+    """A PipelineOutput schema violation surfaces as ValidationError
+    and is retried by _run_agent_with_retry.
+
+    This proves end-to-end that the model_validator in Phase 2 plays
+    correctly with the retry from Phase 1.
+    """
+    from pydantic import ValidationError as _VE
+
+    from src.rules_lawyer_bot.agent.schemas import ActionType, PipelineOutput
+
+    # Compute the actual ValidationError that PipelineOutput raises
+    # when action_type=FINAL_ANSWER but final_answer is missing.
+    schema_error = None
+    try:
+        PipelineOutput(
+            action_type=ActionType.FINAL_ANSWER,
+            final_answer=None,
+            stage_reasoning="invalid",
+        )
+        raise AssertionError("Should have raised ValidationError")
+    except _VE as e:
+        schema_error = e
+
+    call_count = {"n": 0}
+
+    def _make_stream_result():
+        call_count["n"] += 1
+
+        async def _stream():
+            if call_count["n"] < 3:
+                raise schema_error
+            return
+            yield  # makes this an async generator
+
+        result = MagicMock()
+        result.stream_events = _stream
+        result.new_items = []
+        result.final_output = "ok"
+        return result
+
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner") as MockRunner:
+        MockRunner.run_streamed.side_effect = lambda *a, **k: _make_stream_result()
+
+        result = await _run_agent_with_retry(
+            agent=MagicMock(), agent_input="q", session=MagicMock()
+        )
+
+        assert call_count["n"] == 3
+        assert result.final_output == "ok"
+
+
 def _make_validation_error() -> ValidationError:
     """Construct a real ValidationError for raising."""
     from pydantic import BaseModel
