@@ -63,6 +63,45 @@ def _safe_pdf_path(filename: str) -> Path:
     return candidate
 
 
+def _get_pdf_text_cache(pdf_path: Path) -> Path:
+    """Return path to cached text extraction of a PDF.
+
+    The cache is `<pdf_storage_path>/.cache/<pdf_name>.txt`, generated via
+    `pdftotext -layout` which preserves form-feed (`\\f`) characters between
+    pages. The cache is regenerated when the PDF's mtime is newer than the
+    cache's mtime.
+
+    Args:
+        pdf_path: Absolute Path to the source PDF (already validated
+            via _safe_pdf_path).
+
+    Returns:
+        Path to the .txt cache file.
+
+    Raises:
+        subprocess.CalledProcessError: If pdftotext fails.
+    """
+    cache_dir = pdf_path.parent / ".cache"
+    cache_dir.mkdir(exist_ok=True)
+    cache_path = cache_dir / (pdf_path.name + ".txt")
+
+    needs_regen = (
+        not cache_path.exists()
+        or cache_path.stat().st_mtime < pdf_path.stat().st_mtime
+    )
+
+    if needs_regen:
+        logger.debug(f"Generating PDF text cache: {cache_path}")
+        subprocess.run(
+            ["pdftotext", "-layout", str(pdf_path), str(cache_path)],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+
+    return cache_path
+
+
 def _sandbox(tool_name: str, payload: str) -> str:
     """Wrap tool output in sandbox tags so the LLM treats content as untrusted data.
 
