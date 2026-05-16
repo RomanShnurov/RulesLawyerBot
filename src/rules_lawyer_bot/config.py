@@ -49,11 +49,77 @@ class Settings(BaseSettings):
         default=4,
         description="Max concurrent ugrep processes"
     )
+    max_context_tokens: int = Field(
+        default=90000,
+        description=(
+            "Token budget for conversation history sent to the model on "
+            "each call. Kept well below the model's hard context limit to "
+            "leave headroom for the system prompt and the structured "
+            "completion. Oldest turns are trimmed first."
+        )
+    )
+    max_full_document_chars: int = Field(
+        default=12000,
+        description=(
+            "Max characters returned by read_full_document. A single "
+            "full-document dump must not be able to fill the model's "
+            "context window; targeted search tools should be preferred."
+        )
+    )
+
+    # Per-user budget
+    budget_enabled: bool = Field(
+        default=True,
+        description="Master switch for per-user request/token budget"
+    )
+    daily_request_limit: int = Field(
+        default=50,
+        description="Max successful requests per user per UTC day"
+    )
+    daily_token_limit: int = Field(
+        default=300000,
+        description="Max total tokens per user per UTC day"
+    )
+    monthly_request_limit: int = Field(
+        default=1000,
+        description="Max successful requests per user per UTC month"
+    )
+    monthly_token_limit: int = Field(
+        default=6000000,
+        description="Max total tokens per user per UTC month"
+    )
+
+    # Session history retention
+    session_max_turns: int = Field(
+        default=20,
+        description=(
+            "Keep only the last N user-turn boundaries in each user's "
+            "SQLiteSession. Trimmed inline after every answer."
+        )
+    )
+    session_ttl_days: int = Field(
+        default=30,
+        description=(
+            "Delete a user's session DB file if untouched for this many "
+            "days (privacy + disk)."
+        )
+    )
+    retention_cleanup_interval_seconds: int = Field(
+        default=86400,
+        description=(
+            "Interval for the background session/budget cleanup task. "
+            "Runs once at startup, then every interval."
+        )
+    )
 
     # Logging
     log_level: str = Field(
         default="INFO",
         description="Logging level (DEBUG, INFO, WARNING, ERROR)"
+    )
+    log_format: str = Field(
+        default="text",
+        description="Logging output format: 'text' for human-readable or 'json' for structured logs"
     )
 
     # BoardGameGeek API
@@ -90,10 +156,53 @@ class Settings(BaseSettings):
         description="Environment name for Langfuse traces"
     )
 
+    # Sentry Error Tracking
+    sentry_dsn: str = Field(
+        default="",
+        description="Sentry DSN (leave empty to disable)"
+    )
+    sentry_environment: str = Field(
+        default="production",
+        description="Environment tag for Sentry events"
+    )
+    sentry_release: str = Field(
+        default="",
+        description="Release identifier for Sentry (e.g. git SHA). Empty = auto-detect"
+    )
+    sentry_traces_sample_rate: float = Field(
+        default=0.0,
+        description=(
+            "Sentry APM traces sample rate (0.0-1.0). Keep 0.0 when using "
+            "OpenTelemetry/Langfuse to avoid double-tracing."
+        )
+    )
+
+    # Health & Heartbeat
+    health_host: str = Field(
+        default="0.0.0.0",
+        description="Bind host for the /health HTTP endpoint"
+    )
+    health_port: int = Field(
+        default=8080,
+        description="Port for the /health HTTP endpoint. Set to 0 to disable."
+    )
+    heartbeat_interval_seconds: int = Field(
+        default=300,
+        description=(
+            "Interval for the periodic 'bot alive' log line. "
+            "Set to 0 to disable."
+        )
+    )
+
     @property
     def session_db_dir(self) -> str:
         """Directory for per-user session databases."""
         return f"{self.data_path}/sessions"
+
+    @property
+    def budget_db_path(self) -> str:
+        """Path to the single shared budget counters database."""
+        return f"{self.data_path}/budget.db"
 
     @property
     def admin_ids(self) -> list[int]:
@@ -113,6 +222,11 @@ class Settings(BaseSettings):
             and bool(self.langfuse_public_key.strip())
             and bool(self.langfuse_secret_key.strip())
         )
+
+    @property
+    def sentry_enabled(self) -> bool:
+        """Check if Sentry should be initialized."""
+        return bool(self.sentry_dsn.strip())
 
 
 # Global settings instance
