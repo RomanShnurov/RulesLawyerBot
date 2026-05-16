@@ -132,10 +132,19 @@ async def test_start_then_stop_cleanup_task():
 @pytest.mark.asyncio
 async def test_run_cleanup_once_swallows_errors(monkeypatch):
     from src.rules_lawyer_bot.utils import retention
+    from src.rules_lawyer_bot.utils.budget import budget_tracker
+
+    called = []
 
     async def _boom(*a, **k):
+        called.append(True)
         raise RuntimeError("sweep down")
 
+    async def _no_prune(*a, **k):
+        return 0
+
     monkeypatch.setattr(retention, "cleanup_stale_sessions", _boom)
+    monkeypatch.setattr(budget_tracker, "prune", _no_prune)
     # Must not raise even though the sweep blows up.
     await retention.run_cleanup_once()
+    assert called  # the failing sweep path was actually exercised
