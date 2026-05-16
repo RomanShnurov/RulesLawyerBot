@@ -106,3 +106,36 @@ async def test_cleanup_deletes_stale_db_and_sidecars(tmp_path):
 async def test_cleanup_missing_dir_is_noop(tmp_path):
     deleted = await cleanup_stale_sessions(str(tmp_path / "nope"), ttl_days=30)
     assert deleted == 0
+
+
+@pytest.mark.asyncio
+async def test_start_cleanup_zero_interval_is_noop():
+    from src.rules_lawyer_bot.utils import retention
+
+    retention.start_cleanup(0)
+    assert retention._cleanup_task is None
+
+
+@pytest.mark.asyncio
+async def test_start_then_stop_cleanup_task():
+    import asyncio
+
+    from src.rules_lawyer_bot.utils import retention
+
+    retention.start_cleanup(3600)
+    assert retention._cleanup_task is not None
+    await asyncio.sleep(0)  # let the task start
+    await retention.stop_cleanup()
+    assert retention._cleanup_task is None
+
+
+@pytest.mark.asyncio
+async def test_run_cleanup_once_swallows_errors(monkeypatch):
+    from src.rules_lawyer_bot.utils import retention
+
+    async def _boom(*a, **k):
+        raise RuntimeError("sweep down")
+
+    monkeypatch.setattr(retention, "cleanup_stale_sessions", _boom)
+    # Must not raise even though the sweep blows up.
+    await retention.run_cleanup_once()
