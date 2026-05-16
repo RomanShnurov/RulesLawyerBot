@@ -17,17 +17,66 @@ if TYPE_CHECKING:
 _span_processor: Optional["SimpleSpanProcessor"] = None
 
 
+def _disable_agents_sdk_default_tracing() -> None:
+    """Silence the Agents SDK built-in tracer entirely.
+
+    The SDK's default ``BatchTraceProcessor`` wraps a ``BackendSpanExporter``
+    that POSTs spans to a hardcoded ``https://api.openai.com/v1/traces/ingest``
+    endpoint using ``OPENAI_API_KEY``. With a proxy key (not a real OpenAI
+    key) every run 401s and the exporter retries with backoff (up to 3x,
+    growing to 30s) on a background thread. With no Langfuse consumer there
+    is no use for SDK traces at all, so disable them.
+    """
+    try:
+        from agents import set_tracing_disabled
+
+        set_tracing_disabled(True)
+        logger.info(
+            "OpenAI Agents SDK built-in tracing disabled (no Langfuse consumer)"
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Failed to disable Agents SDK tracing: {e}")
+
+
+def _drop_agents_sdk_backend_exporter() -> None:
+    """Remove only the SDK's default api.openai.com span exporter.
+
+    ``logfire.instrument_openai_agents()`` instruments via OpenTelemetry and
+    exports to Langfuse through the OTLP processor configured above. It does
+    NOT remove the Agents SDK's built-in ``BatchTraceProcessor`` — that still
+    POSTs spans to api.openai.com with our proxy key (401 + retry/backoff on
+    every run). Clearing SDK-level trace processors drops that dead path; the
+    Langfuse export lives on the OTel layer and is unaffected.
+    """
+    try:
+        from agents import set_trace_processors
+
+        set_trace_processors([])
+        logger.info(
+            "Agents SDK default api.openai.com trace exporter removed "
+            "(Langfuse export retained via OpenTelemetry)"
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Failed to drop Agents SDK backend exporter: {e}")
+
+
 def setup_langfuse_instrumentation() -> bool:
     """Initialize Langfuse observability via Pydantic Logfire instrumentation.
 
     Uses the OpenAI-recommended pattern with Logfire for automatic
     instrumentation of OpenAI Agents SDK.
 
+    In every case the Agents SDK's built-in api.openai.com trace exporter is
+    neutralised: it is useless (and 401-noisy) behind a proxy API key. When
+    Langfuse is on, only that exporter is dropped; when off, SDK tracing is
+    disabled entirely.
+
     Returns:
         True if instrumentation was successfully enabled, False otherwise
     """
     if not settings.tracing_enabled:
         logger.info("Langfuse tracing is disabled")
+        _disable_agents_sdk_default_tracing()
         return False
 
     try:
@@ -68,6 +117,11 @@ def setup_langfuse_instrumentation() -> bool:
         # Instrument OpenAI Agents SDK
         logfire.instrument_openai_agents()
 
+        # Logfire does NOT remove the SDK's default api.openai.com exporter.
+        # Drop it so it stops 401-ing against the proxy key every run; the
+        # Langfuse OTLP path above is on the OTel layer and survives.
+        _drop_agents_sdk_backend_exporter()
+
         logger.info(
             f"✅ Langfuse instrumentation enabled via Logfire "
             f"(environment: {settings.langfuse_environment}, endpoint: {otlp_endpoint})"
@@ -76,9 +130,11 @@ def setup_langfuse_instrumentation() -> bool:
 
     except ImportError as e:
         logger.warning(f"Failed to import Logfire instrumentation: {e}")
+        _disable_agents_sdk_default_tracing()
         return False
     except Exception as e:
         logger.error(f"Failed to setup Langfuse instrumentation: {e}", exc_info=True)
+        _disable_agents_sdk_default_tracing()
         return False
 
 

@@ -8,8 +8,10 @@ Prerequisites:
     1. Register your application at https://boardgamegeek.com/applications
     2. Add your BGG API token to .env file: BGG_API_TOKEN=your-token-here
 """
+import csv
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -20,6 +22,97 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+CSV_PATH = Path("rules_pdfs_inventory.csv")
+
+
+def _stem_key(name: str) -> str:
+    """Normalize a name to match how rename_pdfs.py builds the PDF stem.
+    Keeps load_csv_metadata in sync with sanitize_for_windows without import cycles."""
+    for bad, good in (
+        (":", " -"), ("/", "-"), ("\\", "-"), ("|", "-"),
+        ("?", ""), ("*", ""), ('"', "'"), ("<", "("), (">", ")"),
+    ):
+        name = name.replace(bad, good)
+    return re.sub(r"\s+", " ", name).strip(" .")
+
+
+def load_csv_metadata() -> dict[str, dict]:
+    """Load PDF-stem-key -> {bgg_id, russian_names} from inventory CSV."""
+    meta: dict[str, dict] = {}
+    if not CSV_PATH.exists():
+        return meta
+    with open(CSV_PATH, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            en = (row.get("english_name") or "").strip()
+            if not en:
+                continue
+            key = _stem_key(en)
+            entry = meta.setdefault(key, {"bgg_id": None, "russian_names": []})
+            if entry["bgg_id"] is None:
+                m = re.search(r"BGG ID:\s*(\d+)", row.get("notes", "") or "")
+                if m:
+                    entry["bgg_id"] = m.group(1)
+            ru = (row.get("russian_names") or "").strip()
+            if ru and ru not in entry["russian_names"]:
+                entry["russian_names"].append(ru)
+    return meta
+
+
+def _bgg_request(url: str, params: dict, headers: dict, *, max_retries: int = 5) -> Optional[bytes]:
+    """GET with exponential backoff on 429/5xx. Returns response content or None."""
+    delay = 2
+    for attempt in range(max_retries):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=15)
+            if r.status_code == 429 or r.status_code >= 500:
+                print(f"   ⏳ HTTP {r.status_code}, retry in {delay}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            r.raise_for_status()
+            return r.content
+        except requests.RequestException as e:
+            print(f"   ⏳ {e}, retry in {delay}s (attempt {attempt + 1}/{max_retries})")
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+    return None
+
+
+def fetch_bgg_details(bgg_id: str, headers: dict) -> Optional[dict]:
+    """Fetch game details by known BGG ID. Skips the search step."""
+    details_url = "https://boardgamegeek.com/xmlapi2/thing"
+    content = _bgg_request(details_url, {"id": bgg_id, "type": "boardgame"}, headers)
+    if content is None:
+        return None
+    try:
+        details_root = ET.fromstring(content)
+    except ET.ParseError:
+        return None
+    item = details_root.find("item")
+    if item is None:
+        return None
+
+    primary_name = None
+    alternate_names = []
+    for name in item.findall("name"):
+        name_type = name.get("type")
+        name_value = name.get("value")
+        if name_type == "primary":
+            primary_name = name_value
+        elif name_type == "alternate":
+            alternate_names.append(name_value)
+
+    categories = [cat.get("value") for cat in item.findall("link[@type='boardgamecategory']")]
+    mechanics = [mech.get("value") for mech in item.findall("link[@type='boardgamemechanic']")]
+
+    return {
+        "bgg_id": bgg_id,
+        "primary_name": primary_name,
+        "alternate_names": alternate_names,
+        "categories": categories[:5],
+        "mechanics": mechanics[:5],
+    }
 
 
 def search_bgg_game(game_name: str) -> Optional[dict]:
@@ -53,65 +146,21 @@ def search_bgg_game(game_name: str) -> Optional[dict]:
         "Authorization": f"Bearer {bgg_token}"
     }
 
-    try:
-        response = requests.get(search_url, params=params, headers=headers, timeout=10)
-        response.raise_for_status()
-
-        root = ET.fromstring(response.content)
-        items = root.findall("item")
-
-        if not items:
-            print(f"⚠️  '{game_name}' not found in BGG")
-            return None
-
-        # Take first result
-        game_id = items[0].get("id")
-
-        # Get game details
-        # BGG API requires delay between requests
-        time.sleep(1)
-
-        details_url = "https://boardgamegeek.com/xmlapi2/thing"
-        details_params = {"id": game_id, "type": "boardgame"}
-
-        details_response = requests.get(details_url, params=details_params, headers=headers, timeout=10)
-        details_response.raise_for_status()
-
-        details_root = ET.fromstring(details_response.content)
-        item = details_root.find("item")
-
-        if item is None:
-            return None
-
-        # Extract names
-        names = item.findall("name")
-        primary_name = None
-        alternate_names = []
-
-        for name in names:
-            name_type = name.get("type")
-            name_value = name.get("value")
-
-            if name_type == "primary":
-                primary_name = name_value
-            elif name_type == "alternate":
-                alternate_names.append(name_value)
-
-        # Extract categories/mechanics for tags
-        categories = [cat.get("value") for cat in item.findall("link[@type='boardgamecategory']")]
-        mechanics = [mech.get("value") for mech in item.findall("link[@type='boardgamemechanic']")]
-
-        return {
-            "bgg_id": game_id,
-            "primary_name": primary_name,
-            "alternate_names": alternate_names,
-            "categories": categories[:5],  # First 5
-            "mechanics": mechanics[:5]
-        }
-
-    except Exception as e:
-        print(f"❌ Error searching '{game_name}': {e}")
+    content = _bgg_request(search_url, params, headers)
+    if content is None:
         return None
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return None
+    items = root.findall("item")
+    if not items:
+        print(f"⚠️  '{game_name}' not found in BGG")
+        return None
+
+    game_id = items[0].get("id")
+    time.sleep(1)
+    return fetch_bgg_details(game_id, headers)
 
 
 def generate_index_from_pdfs():
@@ -140,6 +189,16 @@ def generate_index_from_pdfs():
 
     print(f"\n🔍 Found {len(pdf_files)} PDF files")
 
+    csv_meta = load_csv_metadata()
+    print(f"📋 Loaded BGG IDs from CSV: {sum(1 for v in csv_meta.values() if v['bgg_id'])} entries")
+
+    bgg_token = os.getenv("BGG_API_TOKEN", "").strip()
+    headers = {
+        "User-Agent": "RulesLawyerBot/1.0 (https://github.com/RomanShnurov/RulesLawyerBot)",
+    }
+    if bgg_token:
+        headers["Authorization"] = f"Bearer {bgg_token}"
+
     games_index = {"games": []}
 
     for pdf_file in sorted(pdf_files):
@@ -149,14 +208,23 @@ def generate_index_from_pdfs():
 
         game_name = pdf_file.stem
 
-        # Check if already in index
-        if game_name in existing_games:
+        # Reuse existing entry only if it has bgg_id (otherwise re-fetch)
+        existing = existing_games.get(game_name)
+        if existing and existing.get("bgg_id"):
             print(f"✅ {game_name} (already in index)")
-            games_index["games"].append(existing_games[game_name])
+            games_index["games"].append(existing)
             continue
 
-        print(f"\n🔎 Searching BGG for '{game_name}'...")
-        bgg_info = search_bgg_game(game_name)
+        # Prefer cached BGG ID from CSV — skip search step
+        meta = csv_meta.get(game_name, {})
+        cached_id = meta.get("bgg_id")
+        if cached_id:
+            print(f"\n🎯 Fetching BGG details for '{game_name}' (ID {cached_id})...")
+            bgg_info = fetch_bgg_details(cached_id, headers)
+            time.sleep(1)
+        else:
+            print(f"\n🔎 Searching BGG for '{game_name}'...")
+            bgg_info = search_bgg_game(game_name)
 
         # Find all related PDF files
         related_pdfs = [
@@ -171,9 +239,9 @@ def generate_index_from_pdfs():
                 if any('\u0400' <= c <= '\u04FF' for c in name)
             ]
 
-            # If no Russian names, add English name as fallback
+            # Fallback chain: BGG -> CSV -> English name
             if not russian_names:
-                russian_names = [game_name]
+                russian_names = meta.get("russian_names") or [game_name]
 
             game_entry = {
                 "english_name": game_name,
@@ -187,14 +255,16 @@ def generate_index_from_pdfs():
             print(f"   Russian names: {', '.join(russian_names[:3])}")
 
         else:
-            # Fallback: create basic entry
+            # Fallback: use CSV metadata when BGG unreachable
             game_entry = {
                 "english_name": game_name,
-                "russian_names": [game_name],
+                "russian_names": meta.get("russian_names") or [game_name],
                 "pdf_files": related_pdfs,
-                "tags": []
+                "tags": [],
             }
-            print(f"⚠️  {game_name} (BGG not found, created basic entry)")
+            if cached_id:
+                game_entry["bgg_id"] = cached_id
+            print(f"⚠️  {game_name} (BGG fetch failed, used CSV data)")
 
         games_index["games"].append(game_entry)
 
@@ -207,5 +277,10 @@ def generate_index_from_pdfs():
 
 
 if __name__ == "__main__":
-    print("🎮 BoardGameGeek API games_index.json Generator\n")
+    print("🎮 BoardGameGeek API games_index.json Generator")
+    print("   Powered by BoardGameGeek (https://boardgamegeek.com)\n")
     generate_index_from_pdfs()
+    print("\n" + "=" * 60)
+    print("Game metadata powered by BoardGameGeek")
+    print("https://boardgamegeek.com")
+    print("=" * 60)

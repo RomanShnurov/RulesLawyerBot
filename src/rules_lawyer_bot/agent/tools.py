@@ -18,6 +18,7 @@ from src.rules_lawyer_bot.agent.repository import (
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.utils.logger import logger
 from src.rules_lawyer_bot.utils.safety import safe_execution, ugrep_semaphore
+from src.rules_lawyer_bot.utils.text_readability import document_is_unreadable
 from src.rules_lawyer_bot.utils.timer import ScopeTimer
 
 
@@ -164,6 +165,28 @@ def _annotate_with_pages(
     return results
 
 
+def _unreadable_payload(tool_name: str) -> str:
+    """Sandboxed no_match telling the agent the rulebook is unreadable.
+
+    Returned deterministically for every search/read against a document
+    whose whole text layer is broken-font gibberish, so the agent
+    escalates to the user in one turn instead of looping every keyword to
+    MaxTurns on a document that can never yield an answer.
+    """
+    return _sandbox(
+        tool_name,
+        json.dumps(
+            {
+                "status": "no_match",
+                "data": [],
+                "meta": {"reason": "unreadable_text_layer"},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
+
+
 def _sandbox(tool_name: str, payload: str) -> str:
     """Wrap tool output in sandbox tags so the LLM treats content as untrusted data.
 
@@ -303,6 +326,15 @@ async def _search_inside_file_ugrep_impl(
             raise FileNotFoundError(f"'{filename}'")
 
         cache_path = _get_pdf_text_cache(pdf_path)
+
+        # If the whole text layer is broken (font with no ToUnicode CMap →
+        # pdftotext emits single-letter gibberish), no keyword can ever
+        # yield a usable excerpt. Tell the agent up front so it escalates
+        # to the user instead of looping every term to MaxTurns.
+        if document_is_unreadable(
+            cache_path.read_text(encoding="utf-8", errors="replace")
+        ):
+            return _unreadable_payload("search_inside_file_ugrep")
 
         # Run ugrep against the cached text with byte offsets + line numbers
         cmd = [
@@ -472,6 +504,13 @@ def read_full_document(filename: str) -> str:
 
         cache_path = _get_pdf_text_cache(pdf_path)
         full_text = cache_path.read_text(encoding="utf-8", errors="replace")
+
+        # Same broken-text-layer guard as the search tools: a wholly
+        # unreadable document is a dead end — say so once instead of
+        # dumping gibberish the agent will loop on.
+        if document_is_unreadable(full_text):
+            return _unreadable_payload("read_full_document")
+
         pages_text = full_text.split("\f")
 
         # Build per-page data; truncate aggressively to avoid context overflow
@@ -481,12 +520,15 @@ def read_full_document(filename: str) -> str:
             if text.strip()
         ]
 
-        # Soft cap: keep at most 100k chars total across pages
+        # Soft cap: a single full-document dump must not be able to fill
+        # the model's context window (especially for Cyrillic, which
+        # tokenizes inefficiently). Targeted search tools are preferred.
+        max_chars = settings.max_full_document_chars
         total_chars = 0
         truncated = False
         kept: list[dict] = []
         for entry in data:
-            if total_chars + len(entry["text"]) > 100_000:
+            if total_chars + len(entry["text"]) > max_chars:
                 truncated = True
                 break
             kept.append(entry)

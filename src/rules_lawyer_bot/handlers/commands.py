@@ -10,6 +10,7 @@ from telegram.ext import ContextTypes
 
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.utils.logger import logger
+from src.rules_lawyer_bot.utils.request_context import bind_request_context
 from src.rules_lawyer_bot.utils.telegram_helpers import send_long_message
 
 
@@ -21,6 +22,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context: Telegram context
     """
     user = update.effective_user
+    bind_request_context(user.id, user.username, update.effective_chat.id)
     logger.info(f"User {user.id} ({user.username}) started bot")
 
     welcome_message = f"""
@@ -65,6 +67,7 @@ async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context: Telegram context
     """
     user = update.effective_user
+    bind_request_context(user.id, user.username, update.effective_chat.id)
     logger.info(f"User {user.id} ({user.username}) requested game list via /games")
 
     # Extract search query from command args

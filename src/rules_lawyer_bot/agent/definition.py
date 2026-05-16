@@ -35,10 +35,15 @@ def create_agent(with_examples: bool = False) -> Agent:
     Returns:
         Configured Agent instance
     """
-    # Initialize OpenAI client with custom base URL
+    # Initialize OpenAI client with custom base URL.
+    # An explicit per-request timeout lets the SDK raise APITimeoutError
+    # (a retriable error) on a stalled HTTP read, instead of relying on
+    # the 600s SDK default. The hard wall-clock cap in
+    # _run_agent_with_retry is the outer guarantee.
     client = AsyncOpenAI(
         api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url
+        base_url=settings.openai_base_url,
+        timeout=float(settings.agent_run_timeout_seconds),
     )
 
     model = OpenAIChatCompletionsModel(

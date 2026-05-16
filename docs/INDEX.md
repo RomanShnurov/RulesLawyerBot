@@ -20,8 +20,8 @@
 - [**DOCKER_SETUP.md**](DOCKER_SETUP.md) - Detailed Docker configuration and deployment guide
 
 ### Configuration & Setup
+- [**PDF_ORGANIZATION_GUIDE.md**](PDF_ORGANIZATION_GUIDE.md) - **Complete guide for organizing your PDF collection** (renaming, indexing, BGG integration)
 - [**GAMES_INDEX.md**](GAMES_INDEX.md) - Multilingual games index setup and usage
-- [**BGG_API_SETUP.md**](BGG_API_SETUP.md) - BoardGameGeek API setup for automatic game metadata
 
 ### Architecture & Technical Guides
 - [**SGR_ARCHITECTURE.md**](SGR_ARCHITECTURE.md) - **Schema-Guided Reasoning implementation guide** (transparent agent reasoning with structured outputs)
@@ -75,7 +75,10 @@ RulesLawyerBot/
 │   ├── GAMES_INDEX.md       # Games index documentation
 │   └── BGG_API_SETUP.md     # BoardGameGeek API setup guide
 ├── scripts/                 # Utility scripts
-│   └── generate_games_index.py  # Auto-generate games index from PDFs
+│   ├── analyze_pdfs.py      # Analyze PDFs and create inventory CSV
+│   ├── auto_fill_inventory.py  # Auto-fill CSV with BGG API (NEW!)
+│   ├── rename_pdfs.py       # Rename PDFs based on inventory CSV
+│   └── generate_games_index.py  # Auto-generate games index from PDFs using BGG API
 ├── Dockerfile               # Multi-stage Docker build (Python 3.13)
 ├── docker-compose.yml       # Docker Compose configuration
 ├── .env.example             # Example environment variables

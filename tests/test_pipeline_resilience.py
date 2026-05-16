@@ -1,10 +1,12 @@
 """Tests for Runner max_turns, retry, and fallback behaviour."""
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 from tenacity import wait_none
 
+from src.rules_lawyer_bot.handlers import messages as messages_module
 from src.rules_lawyer_bot.handlers.messages import _run_agent_with_retry
 
 
@@ -135,6 +137,42 @@ async def test_retry_on_validation_error_from_stream():
 
 
 @pytest.mark.asyncio
+async def test_retry_on_model_behavior_error_then_success():
+    """The Agents SDK wraps a malformed structured-output ValidationError
+    in ModelBehaviorError on the final-output path (not a bare
+    pydantic.ValidationError). That is exactly the 'LLM returned malformed
+    JSON' case the retry is meant to cover, so it MUST be retried."""
+    from agents.exceptions import ModelBehaviorError
+
+    call_count = {"n": 0}
+
+    def _make_stream_result():
+        call_count["n"] += 1
+
+        async def _stream():
+            if call_count["n"] < 3:
+                raise ModelBehaviorError("Invalid JSON when parsing ...")
+            return
+            yield  # makes this an async generator
+
+        result = MagicMock()
+        result.stream_events = _stream
+        result.new_items = []
+        result.final_output = "ok"
+        return result
+
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner") as MockRunner:
+        MockRunner.run_streamed.side_effect = lambda *a, **k: _make_stream_result()
+
+        result = await _run_agent_with_retry(
+            agent=MagicMock(), agent_input="q", session=MagicMock()
+        )
+
+        assert call_count["n"] == 3
+        assert result.final_output == "ok"
+
+
+@pytest.mark.asyncio
 async def test_max_turns_exceeded_not_retried():
     """MaxTurnsExceeded propagates without retry."""
     from agents.exceptions import MaxTurnsExceeded
@@ -207,6 +245,77 @@ async def test_schema_violation_triggers_retry():
 
         assert call_count["n"] == 3
         assert result.final_output == "ok"
+
+
+@pytest.mark.asyncio
+async def test_agent_run_times_out_and_is_not_retried():
+    """A stalled stream is bounded by a wall-clock timeout.
+
+    A model/proxy that accepts the request but never finishes streaming
+    raises none of the retriable errors, so without an explicit deadline
+    the coroutine hangs forever and (with PTB sequential dispatch) freezes
+    the whole bot. The wall-clock timeout must fire, raise TimeoutError,
+    and NOT be retried (retrying a stalled model just triples the wait).
+    """
+    call_count = {"n": 0}
+
+    def _hanging_result(*_args, **_kwargs):
+        call_count["n"] += 1
+        result = MagicMock()
+
+        async def _stream():
+            await asyncio.sleep(5)
+            return
+            yield  # makes this an async generator
+
+        result.stream_events = _stream
+        result.new_items = []
+        result.final_output = None
+        return result
+
+    with patch.object(
+        messages_module.settings, "agent_run_timeout_seconds", 0.05
+    ), patch(
+        "src.rules_lawyer_bot.handlers.messages.Runner"
+    ) as MockRunner:
+        MockRunner.run_streamed.side_effect = _hanging_result
+
+        with pytest.raises(TimeoutError):
+            await _run_agent_with_retry(
+                agent=MagicMock(), agent_input="q", session=MagicMock()
+            )
+
+    assert call_count["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_agent_initialises_perf_state():
+    """_run_agent_with_retry seeds the per-run perf ContextVar so the
+    model-input filter and the summary log have bookkeeping to read.
+    attempts is bumped once per (successful) attempt."""
+    from src.rules_lawyer_bot.handlers.messages import _perf_state
+
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner") as MockRunner:
+        mock_result = MagicMock()
+
+        async def _empty_stream():
+            return
+            yield
+
+        mock_result.stream_events = _empty_stream
+        mock_result.new_items = []
+        mock_result.final_output = None
+        MockRunner.run_streamed.return_value = mock_result
+
+        await _run_agent_with_retry(
+            agent=MagicMock(), agent_input="q", session=MagicMock()
+        )
+
+    state = _perf_state.get()
+    assert state is not None
+    assert state["attempts"] == 1
+    assert "start" in state and "last" in state
+    assert state["turn"] == 0  # Runner mocked -> filter never invoked
 
 
 def _make_validation_error() -> ValidationError:

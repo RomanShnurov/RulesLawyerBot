@@ -1,7 +1,7 @@
 # RulesLawyerBot
 
 <p align="center">
-  <img src="logo/RulesLawyerBot.png" alt="RulesLawyerBot Logo" width="400"/>
+  <img src="logo/rules_lawyer_bot.png" alt="RulesLawyerBot Logo" width="400"/>
 </p>
 
 A production-ready Telegram bot that acts as a board game rules referee, using OpenAI's Agents SDK with a multi-stage conversational pipeline to search through PDF rulebooks and answer questions in multiple languages.
@@ -126,6 +126,8 @@ This script:
 **Requirements:**
 - BGG API token (see [BGG API Setup](docs/BGG_API_SETUP.md))
 - Add `BGG_API_TOKEN` to your `.env` file
+- **Display "Powered by BGG" logo** (required for public-facing apps)
+  - Download from [BGG's logo folder](https://drive.google.com/drive/folders/1k3VgEIpNEY59iTVnpTibt31JcO0rEaSw?usp=drive_link)
 
 **Features:**
 - Incremental updates (only queries new games)
@@ -133,6 +135,12 @@ This script:
 - Fallback for games not found in BGG
 
 See [docs/BGG_API_SETUP.md](docs/BGG_API_SETUP.md) for detailed setup instructions.
+
+<p align="center">
+  <a href="https://boardgamegeek.com">
+    <img src="logo/powered_by_bgg.png" alt="Powered by BoardGameGeek" height="40"/>
+  </a>
+</p>
 
 ## Development Commands
 
@@ -316,7 +324,9 @@ The bot uses a conversational pipeline that adapts based on user input:
 
 ## Adding PDF Rulebooks
 
-### Quick Start
+### Quick Start (Small Collection)
+
+For adding a few PDFs manually:
 
 1. **Add PDF file** to `rules_pdfs/` using English name:
    ```
@@ -336,6 +346,21 @@ The bot uses a conversational pipeline that adapts based on user input:
 3. **Done!** Users can now search in Russian or English:
    - "Как играть в Крылья?" → finds Wingspan.pdf
    - "How to play Wingspan?" → finds Wingspan.pdf
+
+### Organizing Large Collections
+
+For organizing many PDFs at once (e.g., downloaded from Gaga Games, lavkaigr):
+
+**See [docs/PDF_ORGANIZATION_GUIDE.md](docs/PDF_ORGANIZATION_GUIDE.md)** for step-by-step instructions.
+
+Quick overview:
+1. Run `uv run python scripts/analyze_pdfs.py` to create inventory CSV
+2. Run `uv run python scripts/auto_fill_inventory.py` to auto-fill English names with BGG API (NEW!)
+3. Review and fix CSV if needed
+4. Run `uv run python scripts/rename_pdfs.py` to batch rename
+5. Run `uv run python scripts/generate_games_index.py` to auto-generate index with BGG API
+
+This automates the entire process using BoardGameGeek API.
 
 ### Games Index (Multilingual Support)
 

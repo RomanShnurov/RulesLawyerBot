@@ -155,3 +155,75 @@ async def test_search_no_match_returns_empty_data(mock_settings):
 
     assert payload["status"] == "no_match"
     assert payload["data"] == []
+
+
+# Verbatim broken extraction from the real Dead Cells cache (font with no
+# ToUnicode CMap -> single-letter gibberish). Repeated so the whole-doc
+# guard has enough tokens (>= 50) to judge, like a real rulebook cache.
+_GARBLED_CACHE = (
+    "С О     Я   Р\n\n\nР\n    Р\n"
+    "                М Р   Р   РО О\n    ОМ О\n       Б ОМ\n\n"
+    "    иомов и   войной иом\n        РО О\n            МЯ\n"
+    "            О    БОЯ\n        О     СОС ОЯ\n           Р\n"
+) * 4
+
+
+@pytest.mark.asyncio
+async def test_search_garbled_text_reports_no_match(mock_settings):
+    """ugrep finds the letter, but the excerpt is broken-font gibberish.
+    The tool must return no_match with an unreadable reason, not ok."""
+    from src.rules_lawyer_bot.agent.tools import _search_inside_file_ugrep_impl
+
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+    pdf_path = pdf_dir / "broken.pdf"
+    _make_pdf(pdf_path, num_pages=1)
+
+    cache_dir = pdf_dir / ".cache"
+    cache_dir.mkdir(exist_ok=True)
+    cache_path = cache_dir / "broken.pdf.txt"
+    cache_path.write_text(_GARBLED_CACHE, encoding="utf-8")
+    future = time.time() + 60
+    os.utime(cache_path, (future, future))
+
+    # 'иом' literally occurs in the gibberish, so ugrep returns matches.
+    result_raw = await _search_inside_file_ugrep_impl("broken.pdf", "иом")
+    inner_start = result_raw.find(">\n") + 2
+    inner_end = result_raw.rfind("\n</tool_output>")
+    payload = _json.loads(result_raw[inner_start:inner_end])
+
+    assert payload["status"] == "no_match"
+    assert payload["data"] == []
+    assert payload["meta"].get("reason") == "unreadable_text_layer"
+
+
+@pytest.mark.asyncio
+async def test_read_full_document_garbled_reports_no_match(mock_settings):
+    """A fully broken text layer must surface as no_match (with reason),
+    not an ok dump of gibberish the agent cannot use."""
+    import json as _j
+
+    from src.rules_lawyer_bot.agent.tools import read_full_document
+
+    pdf_dir = Path(mock_settings.pdf_storage_path)
+    pdf_path = pdf_dir / "broken.pdf"
+    _make_pdf(pdf_path, num_pages=2)
+
+    cache_dir = pdf_dir / ".cache"
+    cache_dir.mkdir(exist_ok=True)
+    cache_path = cache_dir / "broken.pdf.txt"
+    cache_path.write_text(
+        _GARBLED_CACHE + "\f" + _GARBLED_CACHE, encoding="utf-8"
+    )
+    future = time.time() + 60
+    os.utime(cache_path, (future, future))
+
+    result_raw = await read_full_document.on_invoke_tool(
+        None, _j.dumps({"filename": "broken.pdf"})
+    )
+    inner_start = result_raw.find(">\n") + 2
+    inner_end = result_raw.rfind("\n</tool_output>")
+    payload = _json.loads(result_raw[inner_start:inner_end])
+
+    assert payload["status"] == "no_match"
+    assert payload["data"] == []
+    assert payload["meta"].get("reason") == "unreadable_text_layer"

@@ -49,6 +49,16 @@ class Settings(BaseSettings):
         default=4,
         description="Max concurrent ugrep processes"
     )
+    agent_run_timeout_seconds: int = Field(
+        default=120,
+        description=(
+            "Hard wall-clock cap on a single agent run (all internal "
+            "retries included). A stalled model/proxy stream raises no "
+            "retriable error, so without this deadline the request hangs "
+            "and — with sequential update dispatch — freezes the bot. On "
+            "timeout the user gets a message and the handler returns."
+        )
+    )
     max_context_tokens: int = Field(
         default=90000,
         description=(
@@ -120,6 +130,14 @@ class Settings(BaseSettings):
     log_format: str = Field(
         default="text",
         description="Logging output format: 'text' for human-readable or 'json' for structured logs"
+    )
+    perf_logging: bool = Field(
+        default=False,
+        description=(
+            "Emit [Perf] per-turn / per-run timing logs for latency "
+            "diagnostics. Keep False in production; set True for a "
+            "diagnostic run only."
+        )
     )
 
     # BoardGameGeek API

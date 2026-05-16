@@ -79,6 +79,9 @@ def main() -> None:
     # Initialize Langfuse observability (must be done BEFORE agent creation)
     from src.rules_lawyer_bot.utils.observability import setup_langfuse_instrumentation
 
+    # setup_langfuse_instrumentation() also neutralises the Agents SDK's
+    # built-in api.openai.com trace exporter in every branch (it 401s
+    # behind a proxy key) — see observability.py.
     tracing_enabled = setup_langfuse_instrumentation()
     if tracing_enabled:
         logger.info("🔍 Langfuse observability enabled")
@@ -89,8 +92,17 @@ def main() -> None:
     # timestamp reflects "process start" rather than "first request".
     health.init_state()
 
-    # Build application
-    application = ApplicationBuilder().token(settings.telegram_token).build()
+    # Build application.
+    # concurrent_updates=True: each update is processed in its own task, so
+    # a single slow/stalled request can't block the dispatcher and freeze
+    # the bot for every other user and every later message. The per-agent
+    # wall-clock timeout still bounds any individual stuck request.
+    application = (
+        ApplicationBuilder()
+        .token(settings.telegram_token)
+        .concurrent_updates(True)
+        .build()
+    )
 
     # Bring up the /health endpoint + heartbeat task once the asyncio loop
     # is running. post_init fires after Application.initialize().

@@ -4,12 +4,16 @@ Implements the main message processing flow with multi-stage pipeline
 and streaming progress updates.
 """
 
+import asyncio
 import json
 import re
+import time
+from contextvars import ContextVar
+from typing import Optional
 
 import sentry_sdk
 from agents import Runner
-from agents.exceptions import MaxTurnsExceeded
+from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
 from agents.run import RunConfig
 from openai import APIConnectionError, APITimeoutError
 from pydantic import ValidationError
@@ -31,6 +35,7 @@ from src.rules_lawyer_bot.pipeline.handler import handle_pipeline_output
 from src.rules_lawyer_bot.pipeline.state import get_conversation_state
 from src.rules_lawyer_bot.utils.context_window import (
     build_context_trimming_filter,
+    estimate_tokens,
 )
 from src.rules_lawyer_bot.utils.logger import logger
 from src.rules_lawyer_bot.utils.progress_reporter import ProgressReporter
@@ -84,11 +89,20 @@ def _check_blocklist(text: str) -> bool:
     return bool(_BLOCKLIST_REGEX.search(text))
 
 
+# ModelBehaviorError: the Agents SDK wraps a malformed structured-output
+# ValidationError in ModelBehaviorError on the final-output path
+# (agents/util/_json.py), so a bare ValidationError never surfaces there.
+# A weaker model intermittently emits a PipelineOutput with the wrong
+# field names / missing required fields; a retry usually yields a valid
+# one. Without this it escapes to the generic error handler instead of
+# being retried (then RETRY_EXHAUSTED_RESPONSE after 3 attempts).
+#
 # RateLimitError intentionally omitted: a 1-4s exponential backoff is too
 # short to clear a real rate limit, and we lack Retry-After header parsing.
 # Better to fail fast and let the user retry manually.
 _RETRIABLE_ERRORS = (
     ValidationError,
+    ModelBehaviorError,
     APIConnectionError,
     APITimeoutError,
 )
@@ -104,15 +118,104 @@ MAX_TURNS_RESPONSE = (
     "Попробуйте задать более конкретный вопрос."
 )
 
+AGENT_TIMEOUT_RESPONSE = (
+    "⏱️ Запрос обрабатывался слишком долго и был прерван. "
+    "Попробуйте переформулировать вопрос или повторить позже."
+)
+
 _RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=4)
+
+# Per-run perf state. A ContextVar is isolated per asyncio task, so with
+# concurrent_updates=True one user's turn counter never bleeds into
+# another's. Holds {turn, attempts, start, last} where start/last are
+# time.perf_counter() readings. None outside an instrumented run.
+_perf_state: ContextVar[Optional[dict]] = ContextVar(
+    "agent_perf_state", default=None
+)
+
+
+# The real trimming filter (pure, unit-tested in test_context_window.py).
+_trim_filter = build_context_trimming_filter(
+    max_tokens=settings.max_context_tokens
+)
+
+
+def _summarize_tail(items, max_items: int = 4, max_chars: int = 600) -> str:
+    """Compact, log-safe repr of the last few transcript items.
+
+    Diagnostic only (gated by perf_logging). The tail of the model input on
+    turn N contains the tool outputs and assistant decisions from turns
+    1..N-1 — enough to see whether search returned no_match/ok and why the
+    model keeps looping instead of answering.
+    """
+    try:
+        tail = items[-max_items:]
+    except Exception:
+        return "<unreadable>"
+    parts = []
+    for it in tail:
+        try:
+            blob = json.dumps(it, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            blob = str(it)
+        if len(blob) > max_chars:
+            blob = blob[:max_chars] + f"…(+{len(blob) - max_chars} chars)"
+        parts.append(blob)
+    return " | ".join(parts)
+
+
+def _perf_model_input_filter(call_data):
+    """Logging wrapper around the context-trimming filter.
+
+    The Agents SDK invokes ``call_model_input_filter`` before *every* model
+    call — i.e. once per ReAct turn. That makes it the natural choke point
+    to measure per-turn cadence and prompt size without touching the pure
+    trimming logic. When perf_logging is on we log one line per turn, then
+    delegate to the real filter unchanged.
+    """
+    if settings.perf_logging:
+        state = _perf_state.get()
+        if state is not None:
+            now = time.perf_counter()
+            state["turn"] += 1
+            delta = now - state["last"]
+            state["last"] = now
+            try:
+                items = call_data.model_data.input
+                est = estimate_tokens(items)
+                n_items = len(items)
+            except Exception:
+                est, n_items = -1, -1
+            logger.info(
+                "[Perf] model turn %d: prev turn +%.2fs, "
+                "input≈%d est_tokens, %d items",
+                state["turn"],
+                delta,
+                est,
+                n_items,
+            )
+            if n_items > 0:
+                logger.info(
+                    "[Perf] turn %d tail: %s",
+                    state["turn"],
+                    _summarize_tail(items),
+                )
+    return _trim_filter(call_data)
+
 
 # Bound every model call (including each internal ReAct turn) to a token
 # budget so accumulated session history + large tool outputs cannot exceed
 # the model's context window. Stateless — safe to build once.
+#
+# tracing_disabled: the Agents SDK enables tracing by default and its
+# BackendSpanExporter POSTs spans to a hardcoded https://api.openai.com
+# endpoint with OPENAI_API_KEY. With a proxy key that is not a real OpenAI
+# key this 401s and retries with backoff on every run. When Langfuse is not
+# configured we have no use for SDK traces, so disable them for the request
+# path entirely.
 _RUN_CONFIG = RunConfig(
-    call_model_input_filter=build_context_trimming_filter(
-        max_tokens=settings.max_context_tokens
-    )
+    call_model_input_filter=_perf_model_input_filter,
+    tracing_disabled=not settings.tracing_enabled,
 )
 
 
@@ -122,30 +225,51 @@ async def _run_agent_with_retry(agent, agent_input: str, session):
     Retries on ValidationError (LLM returned malformed JSON) and OpenAI
     network errors. Business errors propagate immediately.
     MaxTurnsExceeded is not retried — it propagates to the caller.
+
+    The whole run (all retries included) is bounded by a hard wall-clock
+    deadline. A stalled model/proxy stream raises none of the retriable
+    errors, so without this the coroutine hangs forever; on timeout
+    asyncio.wait_for cancels the stuck run and raises TimeoutError, which
+    is NOT retried (re-running a stalled model just multiplies the wait).
     """
-    async for attempt in AsyncRetrying(
-        stop=stop_after_attempt(3),
-        wait=_RETRY_WAIT,
-        retry=retry_if_exception_type(_RETRIABLE_ERRORS),
-        reraise=True,
-    ):
-        with attempt:
-            result = Runner.run_streamed(
-                starting_agent=agent,
-                input=agent_input,
-                session=session,
-                max_turns=8,
-                run_config=_RUN_CONFIG,
-            )
-            # Drain the stream so any ValidationError surfaces here, inside
-            # the retry attempt, rather than later in the caller.
-            # This means live tool-call progress is no longer reported during
-            # the run — events are replayed from `result.new_items` after
-            # completion.  This is a deliberate tradeoff to enable retry on
-            # structured-output ValidationError.
-            async for _event in result.stream_events():
-                pass
-            return result
+    # Initialise per-run perf state unconditionally (cheap) so the model
+    # input filter and the summary log can read it. perf_logging only
+    # gates the actual log emission, not the bookkeeping.
+    now = time.perf_counter()
+    _perf_state.set({"turn": 0, "attempts": 0, "start": now, "last": now})
+
+    async def _attempts():
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=_RETRY_WAIT,
+            retry=retry_if_exception_type(_RETRIABLE_ERRORS),
+            reraise=True,
+        ):
+            with attempt:
+                state = _perf_state.get()
+                if state is not None:
+                    state["attempts"] += 1
+                result = Runner.run_streamed(
+                    starting_agent=agent,
+                    input=agent_input,
+                    session=session,
+                    max_turns=8,
+                    run_config=_RUN_CONFIG,
+                )
+                # Drain the stream so any ValidationError surfaces here,
+                # inside the retry attempt, rather than later in the caller.
+                # This means live tool-call progress is no longer reported
+                # during the run — events are replayed from
+                # `result.new_items` after completion. This is a deliberate
+                # tradeoff to enable retry on structured-output
+                # ValidationError.
+                async for _event in result.stream_events():
+                    pass
+                return result
+
+    return await asyncio.wait_for(
+        _attempts(), timeout=settings.agent_run_timeout_seconds
+    )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -257,6 +381,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await progress.finalize()
                 await update.message.reply_text(MAX_TURNS_RESPONSE)
                 return MAX_TURNS_RESPONSE
+            except TimeoutError:
+                logger.warning(
+                    f"Agent run timed out for user {user.id} after "
+                    f"{settings.agent_run_timeout_seconds}s"
+                )
+                await progress.finalize()
+                await update.message.reply_text(AGENT_TIMEOUT_RESPONSE)
+                return AGENT_TIMEOUT_RESPONSE
             except _RETRIABLE_ERRORS as e:
                 # With tenacity reraise=True, the last retriable error
                 # propagates here after attempts are exhausted.
@@ -274,6 +406,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 )
                 total_tokens = getattr(usage, "total_tokens", 0) or 0
                 await budget_tracker.record(user.id, total_tokens)
+
+            # One-line perf summary for latency diagnostics. Decomposes
+            # "slow" into many-turns vs slow-per-turn (proxy/schema). turns
+            # is the number of model calls (filter invocations); compare
+            # against a single-call latency on the same model elsewhere to
+            # isolate the proxy constant.
+            if settings.perf_logging:
+                pstate = _perf_state.get() or {}
+                run_seconds = (
+                    time.perf_counter() - pstate["start"]
+                    if "start" in pstate
+                    else -1.0
+                )
+                tool_calls = sum(
+                    1 for it in result.new_items
+                    if it.type == "tool_call_item"
+                )
+                psum_usage = getattr(
+                    getattr(result, "context_wrapper", None), "usage", None
+                )
+                psum_tokens = getattr(psum_usage, "total_tokens", 0) or 0
+                logger.info(
+                    "[Perf] run summary: total=%.2fs attempts=%d "
+                    "turns≈%d tool_calls=%d total_tokens=%d",
+                    run_seconds,
+                    pstate.get("attempts", 0),
+                    pstate.get("turn", 0),
+                    tool_calls,
+                    psum_tokens,
+                )
 
             # Replay progress events from completed stream (we drained it
             # inside _run_agent_with_retry to surface ValidationError;

@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 
 from src.rules_lawyer_bot.pipeline.state import get_conversation_state
 from src.rules_lawyer_bot.utils.logger import logger
+from src.rules_lawyer_bot.utils.request_context import bind_request_context
 
 
 async def handle_game_selection(
@@ -27,6 +28,11 @@ async def handle_game_selection(
     await query.answer()  # Acknowledge callback to remove loading state
 
     user_id = query.from_user.id
+    bind_request_context(
+        user_id,
+        query.from_user.username,
+        query.message.chat_id if query.message else None,
+    )
     conv_state = get_conversation_state(context, user_id)
 
     # Parse callback data: "game_select:0"

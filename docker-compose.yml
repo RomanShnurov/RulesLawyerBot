@@ -16,6 +16,7 @@ services:
       - PDF_STORAGE_PATH=/app/rules_pdfs
       - DATA_PATH=/app/data
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-10}
       - MAX_CONCURRENT_SEARCHES=${MAX_CONCURRENT_SEARCHES:-4}
       # Langfuse observability
@@ -24,13 +25,35 @@ services:
       - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
       - ENABLE_TRACING=${ENABLE_TRACING:-false}
       - LANGFUSE_ENVIRONMENT=${LANGFUSE_ENVIRONMENT:-production}
+      # Sentry error tracking
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT:-production}
+      - SENTRY_RELEASE=${SENTRY_RELEASE:-}
+      - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+      # Health & heartbeat
+      - HEALTH_HOST=0.0.0.0
+      - HEALTH_PORT=${HEALTH_PORT:-8080}
+      - HEARTBEAT_INTERVAL_SECONDS=${HEARTBEAT_INTERVAL_SECONDS:-300}
 
     volumes:
       - ./rules_pdfs:/app/rules_pdfs
       - ./data:/app/data
 
+    # Uncomment to expose the /health endpoint to the host (e.g. for Uptime
+    # Kuma running outside Docker). The Docker healthcheck below probes
+    # localhost inside the container and does not require this mapping.
+    # ports:
+    #   - "8080:8080"
+
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      # Probe the in-container /health endpoint using stdlib urllib so we
+      # don't have to install curl/wget in the slim image. Exits non-zero
+      # on non-2xx, connection refused, or timeout.
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read(); sys.exit(0)"
       interval: 30s
       timeout: 10s
       retries: 3
