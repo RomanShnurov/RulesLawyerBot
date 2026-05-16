@@ -74,3 +74,71 @@ async def test_admin_bypasses_budget_entirely():
         await messages.handle_message(upd, ctx)
 
     check_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_session_trimmed_after_answer():
+    from src.rules_lawyer_bot.handlers import messages
+
+    upd, ctx = _update(), _context()
+    fake_session = MagicMock()
+    result = MagicMock()
+    result.final_output = None
+    result.new_items = []
+    result.context_wrapper.usage.total_tokens = 123
+
+    with patch.object(messages.settings, "budget_enabled", False), \
+         patch.object(type(messages.settings), "admin_ids", property(lambda self: [])), \
+         patch.object(messages.settings, "session_max_turns", 7), \
+         patch.object(
+             messages.rate_limiter, "check_rate_limit",
+             AsyncMock(return_value=(True, "")),
+         ), \
+         patch.object(
+             messages, "get_user_session", return_value=fake_session
+         ), \
+         patch.object(
+             messages, "_run_agent_with_retry",
+             AsyncMock(return_value=result),
+         ), \
+         patch.object(
+             messages, "send_long_message", AsyncMock()
+         ), \
+         patch.object(
+             messages, "trim_session", AsyncMock()
+         ) as trim_mock:
+        await messages.handle_message(upd, ctx)
+
+    trim_mock.assert_awaited_once_with(fake_session, 7)
+
+
+@pytest.mark.asyncio
+async def test_trim_failure_does_not_break_response():
+    from src.rules_lawyer_bot.handlers import messages
+
+    upd, ctx = _update(), _context()
+    fake_session = MagicMock()
+    result = MagicMock()
+    result.final_output = None
+    result.new_items = []
+
+    with patch.object(messages.settings, "budget_enabled", False), \
+         patch.object(type(messages.settings), "admin_ids", property(lambda self: [])), \
+         patch.object(
+             messages.rate_limiter, "check_rate_limit",
+             AsyncMock(return_value=(True, "")),
+         ), \
+         patch.object(
+             messages, "get_user_session", return_value=fake_session
+         ), \
+         patch.object(
+             messages, "_run_agent_with_retry",
+             AsyncMock(return_value=result),
+         ), \
+         patch.object(messages, "send_long_message", AsyncMock()), \
+         patch.object(
+             messages, "trim_session",
+             AsyncMock(side_effect=RuntimeError("trim boom")),
+         ):
+        # Must not raise.
+        await messages.handle_message(upd, ctx)

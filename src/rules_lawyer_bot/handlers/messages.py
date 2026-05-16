@@ -235,6 +235,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Create progress reporter for streaming updates
         progress = ProgressReporter(context.bot, update.effective_chat.id)
 
+        session = None
         try:
             # Get user-specific session
             logger.debug(f"[Perf] Getting session for user {user.id}")
@@ -372,6 +373,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text(error_message)
             # Return error for trace
             return f"Error: {e}"
+        finally:
+            # Bound stored history after the answer is sent. Never let a
+            # trim glitch break the user's response or the trace.
+            if session is not None:
+                try:
+                    await trim_session(session, settings.session_max_turns)
+                except Exception:
+                    logger.exception("trim_session failed")
 
     # Run with root span for Langfuse tracing
     if tracer is not None:
