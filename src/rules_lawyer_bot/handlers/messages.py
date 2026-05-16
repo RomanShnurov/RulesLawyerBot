@@ -7,8 +7,10 @@ and streaming progress updates.
 import json
 import re
 
+import sentry_sdk
 from agents import Runner
 from agents.exceptions import MaxTurnsExceeded
+from agents.run import RunConfig
 from openai import APIConnectionError, APITimeoutError
 from pydantic import ValidationError
 from tenacity import (
@@ -23,10 +25,16 @@ from telegram.ext import ContextTypes
 from src.rules_lawyer_bot.agent.definition import get_rules_agent, get_user_session
 from src.rules_lawyer_bot.agent.schemas import PipelineOutput
 from src.rules_lawyer_bot.config import settings
+from src.rules_lawyer_bot.utils.budget import budget_tracker
+from src.rules_lawyer_bot.utils.retention import trim_session
 from src.rules_lawyer_bot.pipeline.handler import handle_pipeline_output
 from src.rules_lawyer_bot.pipeline.state import get_conversation_state
+from src.rules_lawyer_bot.utils.context_window import (
+    build_context_trimming_filter,
+)
 from src.rules_lawyer_bot.utils.logger import logger
 from src.rules_lawyer_bot.utils.progress_reporter import ProgressReporter
+from src.rules_lawyer_bot.utils.request_context import bind_request_context
 from src.rules_lawyer_bot.utils.safety import rate_limiter
 from src.rules_lawyer_bot.utils.telegram_helpers import send_long_message
 
@@ -98,6 +106,15 @@ MAX_TURNS_RESPONSE = (
 
 _RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=4)
 
+# Bound every model call (including each internal ReAct turn) to a token
+# budget so accumulated session history + large tool outputs cannot exceed
+# the model's context window. Stateless — safe to build once.
+_RUN_CONFIG = RunConfig(
+    call_model_input_filter=build_context_trimming_filter(
+        max_tokens=settings.max_context_tokens
+    )
+)
+
 
 async def _run_agent_with_retry(agent, agent_input: str, session):
     """Run the agent with bounded retries on transient/structured failures.
@@ -118,6 +135,7 @@ async def _run_agent_with_retry(agent, agent_input: str, session):
                 input=agent_input,
                 session=session,
                 max_turns=8,
+                run_config=_RUN_CONFIG,
             )
             # Drain the stream so any ValidationError surfaces here, inside
             # the retry attempt, rather than later in the caller.
@@ -147,6 +165,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
     message_text = update.message.text
 
+    # Bind request context BEFORE the first log call so user_id/chat_id
+    # are attached to every record from this task. ContextVars + Sentry
+    # SDK 2.x asyncio scope isolation keep concurrent requests separated.
+    bind_request_context(user.id, user.username, update.effective_chat.id)
+
     logger.info(f"User {user.id}: {message_text[:100]}")
 
     # Create root span for Langfuse trace with input/output
@@ -164,6 +187,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not allowed:
         await update.message.reply_text(f"⏳ {rate_limit_msg}")
         return
+
+    # Per-user budget (admins exempt entirely; check fails open internally)
+    if settings.budget_enabled and user.id not in settings.admin_ids:
+        decision = await budget_tracker.check(user.id)
+        if not decision.allowed:
+            logger.info(f"Budget block for user {user.id}: {decision.reason}")
+            retry = (
+                f"\nЛимит вернётся: {decision.retry_at:%Y-%m-%d %H:%M UTC}"
+                if decision.retry_at
+                else ""
+            )
+            await update.message.reply_text(f"🚫 {decision.reason}{retry}")
+            return
 
     # Check blocklist patterns (outside trace to avoid unnecessary spans)
     if _check_blocklist(message_text):
@@ -229,6 +265,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await progress.finalize()
                 await update.message.reply_text(RETRY_EXHAUSTED_RESPONSE)
                 return RETRY_EXHAUSTED_RESPONSE
+
+            # Record budget usage for the completed run (admins exempt).
+            if settings.budget_enabled and user.id not in settings.admin_ids:
+                usage = getattr(
+                    getattr(result, "context_wrapper", None), "usage", None
+                )
+                total_tokens = getattr(usage, "total_tokens", 0) or 0
+                await budget_tracker.record(user.id, total_tokens)
 
             # Replay progress events from completed stream (we drained it
             # inside _run_agent_with_retry to surface ValidationError;
