@@ -34,6 +34,7 @@ from src.rules_lawyer_bot.utils.budget import budget_tracker
 from src.rules_lawyer_bot.utils.conversation_state import ConversationStage
 from src.rules_lawyer_bot.utils.retention import (
     drop_trailing_clarification,
+    drop_trailing_unanswered_user_turn,
     trim_session,
 )
 from src.rules_lawyer_bot.pipeline.handler import (
@@ -82,6 +83,14 @@ BLOCKLIST_RESPONSE = (
     "🎲 Я — помощник по правилам настольных игр. "
     "Задайте вопрос о правилах какой-нибудь игры!"
 )
+
+# Per-user in-flight gate. asyncio is single-threaded per loop, so a
+# locked() check immediately followed by `async with lock` has no yield
+# point between them: a concurrent second update for the same user is
+# reliably dropped (no second agent run on the same SQLiteSession).
+_user_run_locks: dict[int, asyncio.Lock] = {}
+
+BUSY_RESPONSE = "⏳ Я ещё обрабатываю ваш предыдущий вопрос — подождите немного."
 
 
 def _check_blocklist(text: str) -> bool:
@@ -509,6 +518,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Get user-specific session
             logger.debug(f"[Perf] Getting session for user {user.id}")
             session = get_user_session(user.id)
+            # Pre-run sweep: a prior killed/aborted run may have left an
+            # orphaned trailing user turn (SDK persists input immediately,
+            # answer only at the end). At this point the new input is not
+            # in the session yet, so any trailing user turn is an orphan.
+            try:
+                await drop_trailing_unanswered_user_turn(session)
+            except Exception:
+                logger.exception("pre-run orphan sweep failed")
             if answering_clarification:
                 try:
                     await drop_trailing_clarification(session)
@@ -531,6 +548,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 return MAX_TURNS_RESPONSE
             except TimeoutError as e:
                 logger.warning("Agent run timed out for user %s: %s", user.id, e)
+                # Reactive cleanup: the aborted run just orphaned this
+                # user turn in the session. Best-effort; the next run's
+                # pre-run sweep is the robust net.
+                try:
+                    await drop_trailing_unanswered_user_turn(session)
+                except Exception:
+                    logger.exception("reactive orphan cleanup failed")
                 await progress.finalize()
                 await message.reply_text(AGENT_TIMEOUT_RESPONSE)
                 return AGENT_TIMEOUT_RESPONSE
@@ -691,26 +715,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 except Exception:
                     logger.exception("trim_session failed")
 
-    # Run with root span for Langfuse tracing
-    if tracer is not None:
-        # Create root span with user context
-        from src.rules_lawyer_bot.utils.observability import get_trace_context_for_user
+    # Per-user in-flight gate: drop a concurrent second message instead of
+    # starting a second agent run on the same SQLiteSession.
+    lock = _user_run_locks.setdefault(user.id, asyncio.Lock())
+    if lock.locked():
+        logger.info("In-flight run for user %s; dropping concurrent message", user.id)
+        await message.reply_text(BUSY_RESPONSE)
+        return
+    async with lock:
+        # Run with root span for Langfuse tracing
+        if tracer is not None:
+            # Create root span with user context
+            from src.rules_lawyer_bot.utils.observability import (
+                get_trace_context_for_user,
+            )
 
-        trace_attrs = get_trace_context_for_user(user.id, user.username)
-        # Add session ID for Langfuse session grouping
-        trace_attrs["langfuse.session.id"] = str(chat.id)
-        # Set input at trace level (required for Langfuse)
-        trace_attrs["input"] = message_text
+            trace_attrs = get_trace_context_for_user(user.id, user.username)
+            # Add session ID for Langfuse session grouping
+            trace_attrs["langfuse.session.id"] = str(chat.id)
+            # Set input at trace level (required for Langfuse)
+            trace_attrs["input"] = message_text
 
-        with tracer.start_as_current_span(
-            "telegram_message_handler", attributes=trace_attrs
-        ) as root_span:
-            # Run processing and get output
-            output = await _process_message()
+            with tracer.start_as_current_span(
+                "telegram_message_handler", attributes=trace_attrs
+            ) as root_span:
+                # Run processing and get output
+                output = await _process_message()
 
-            # Set output at trace level (required for Langfuse)
-            if root_span.is_recording():
-                root_span.set_attribute("output", output)
-    else:
-        # No tracing, run directly
-        await _process_message()
+                # Set output at trace level (required for Langfuse)
+                if root_span.is_recording():
+                    root_span.set_attribute("output", output)
+        else:
+            # No tracing, run directly
+            await _process_message()
