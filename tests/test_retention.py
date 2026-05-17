@@ -1,7 +1,6 @@
 """Tests for session trimming and stale-session cleanup."""
 
 import time
-from pathlib import Path
 
 import pytest
 
@@ -44,9 +43,15 @@ def _tool(t):
 @pytest.mark.asyncio
 async def test_trim_keeps_last_n_turns_at_user_boundary():
     items = [
-        _u("q1"), _tool("big1"), _a("a1"),
-        _u("q2"), _tool("big2"), _a("a2"),
-        _u("q3"), _tool("big3"), _a("a3"),
+        _u("q1"),
+        _tool("big1"),
+        _a("a1"),
+        _u("q2"),
+        _tool("big2"),
+        _a("a2"),
+        _u("q3"),
+        _tool("big3"),
+        _a("a3"),
     ]
     s = FakeSession(items)
     await trim_session(s, max_turns=2)
@@ -91,6 +96,7 @@ async def test_cleanup_deletes_stale_db_and_sidecars(tmp_path):
 
     old_ts = time.time() - 40 * 86400
     import os
+
     os.utime(old, (old_ts, old_ts))
 
     deleted = await cleanup_stale_sessions(str(sess), ttl_days=30)
@@ -148,3 +154,54 @@ async def test_run_cleanup_once_swallows_errors(monkeypatch):
     # Must not raise even though the sweep blows up.
     await retention.run_cleanup_once()
     assert called  # the failing sweep path was actually exercised
+
+
+def _fco(output: str):
+    """OpenAI Agents SDK tool-result item shape (function_call_output)."""
+    return {"type": "function_call_output", "call_id": "c1", "output": output}
+
+
+@pytest.mark.asyncio
+async def test_trim_elides_oversized_tool_payload():
+    big = "x" * 5000
+    items = [_u("q1"), _fco(big), _a("a1")]
+    s = FakeSession(items)
+    await trim_session(s, max_turns=20)
+    kept = await s.get_items()
+    assert s.clear_calls == 1
+    assert kept[1]["type"] == "function_call_output"
+    assert kept[1]["call_id"] == "c1"
+    assert kept[1]["output"].startswith("<elided:")
+    assert len(kept[1]["output"]) < 100
+    assert kept[0] == _u("q1") and kept[-1] == _a("a1")
+
+
+@pytest.mark.asyncio
+async def test_trim_keeps_small_tool_payload_untouched():
+    items = [_u("q1"), _tool("small result"), _a("a1")]
+    s = FakeSession(items)
+    await trim_session(s, max_turns=20)
+    assert s.clear_calls == 0
+    assert (await s.get_items())[1] == _tool("small result")
+
+
+@pytest.mark.asyncio
+async def test_drop_trailing_clarification_removes_last_assistant():
+    from src.rules_lawyer_bot.utils.retention import drop_trailing_clarification
+
+    items = [_u("q1"), _fco("tool out"), _a("clarify?")]
+    s = FakeSession(items)
+    dropped = await drop_trailing_clarification(s)
+    kept = await s.get_items()
+    assert dropped is True
+    assert kept == [_u("q1"), _fco("tool out")]
+
+
+@pytest.mark.asyncio
+async def test_drop_trailing_clarification_noop_when_last_is_user():
+    from src.rules_lawyer_bot.utils.retention import drop_trailing_clarification
+
+    s = FakeSession([_a("a1"), _u("q2")])
+    dropped = await drop_trailing_clarification(s)
+    assert dropped is False
+    assert s.clear_calls == 0
