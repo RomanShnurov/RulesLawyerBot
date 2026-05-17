@@ -1,4 +1,5 @@
 """Application configuration using pydantic-settings."""
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -7,47 +8,50 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False
+        env_file=".env", env_file_encoding="utf-8", case_sensitive=False
     )
 
     # Telegram
     telegram_token: str = Field(..., description="Telegram bot token")
     admin_user_ids: str = Field(
         default="",
-        description="Comma-separated list of Telegram user IDs with admin access"
+        description="Comma-separated list of Telegram user IDs with admin access",
     )
 
     # OpenAI
     openai_api_key: str = Field(..., description="OpenAI API key")
     openai_base_url: str = Field(
-        default="https://api.openai.com/v1",
-        description="OpenAI API base URL"
+        default="https://api.openai.com/v1", description="OpenAI API base URL"
     )
-    openai_model: str = Field(
-        default="gpt-4o-mini",
-        description="OpenAI model name"
-    )
+    openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model name")
 
     # Paths
     pdf_storage_path: str = Field(
-        default="./rules_pdfs",
-        description="Directory containing PDF rulebooks"
+        default="./rules_pdfs", description="Directory containing PDF rulebooks"
     )
     data_path: str = Field(
-        default="./data",
-        description="Directory for SQLite DBs and logs"
+        default="./data", description="Directory for SQLite DBs and logs"
+    )
+    pdftotext_path: str = Field(
+        default="pdftotext",
+        description=(
+            "Path or name of the poppler `pdftotext` binary. The text "
+            "cache, every ugrep search and the readability guard are all "
+            "calibrated against poppler's extraction; the legacy xpdf "
+            "build emits materially different text for the same PDF "
+            "(a font-without-ToUnicode rulebook becomes ratio-0.33 "
+            "glyph-soup under poppler but ratio-0.68 card-ID noise under "
+            "xpdf). Pin the poppler binary explicitly when more than one "
+            "pdftotext is on PATH (e.g. a stock Windows toolchain)."
+        ),
     )
 
     # Performance
     max_requests_per_minute: int = Field(
-        default=10,
-        description="Max requests per user per minute"
+        default=10, description="Max requests per user per minute"
     )
     max_concurrent_searches: int = Field(
-        default=4,
-        description="Max concurrent ugrep processes"
+        default=4, description="Max concurrent ugrep processes"
     )
     agent_run_timeout_seconds: int = Field(
         default=120,
@@ -57,7 +61,7 @@ class Settings(BaseSettings):
             "retriable error, so without this deadline the request hangs "
             "and — with sequential update dispatch — freezes the bot. On "
             "timeout the user gets a message and the handler returns."
-        )
+        ),
     )
     max_context_tokens: int = Field(
         default=90000,
@@ -66,7 +70,7 @@ class Settings(BaseSettings):
             "each call. Kept well below the model's hard context limit to "
             "leave headroom for the system prompt and the structured "
             "completion. Oldest turns are trimmed first."
-        )
+        ),
     )
     max_full_document_chars: int = Field(
         default=12000,
@@ -74,29 +78,55 @@ class Settings(BaseSettings):
             "Max characters returned by read_full_document. A single "
             "full-document dump must not be able to fill the model's "
             "context window; targeted search tools should be preferred."
-        )
+        ),
+    )
+
+    # Deterministic pre-agent game resolver
+    resolver_enabled: bool = Field(
+        default=True,
+        description="Master switch for the deterministic pre-agent game resolver",
+    )
+    resolver_resolve_threshold: int = Field(
+        default=90,
+        description=(
+            "Min top fuzzy score (0-100) to auto-resolve a game and skip "
+            "LLM identification"
+        ),
+    )
+    resolver_gap_min: int = Field(
+        default=8,
+        description=(
+            "Min score gap between #1 and #2 for the top match to count as "
+            "unique; also the band width for multi-select"
+        ),
+    )
+    resolver_multi_threshold: int = Field(
+        default=75,
+        description="Min score for a candidate to enter the multi-select band",
+    )
+    resolver_absent_threshold: int = Field(
+        default=60,
+        description=(
+            "If the top score is below this, a title-like query is treated "
+            "as a game not in the library"
+        ),
     )
 
     # Per-user budget
     budget_enabled: bool = Field(
-        default=True,
-        description="Master switch for per-user request/token budget"
+        default=True, description="Master switch for per-user request/token budget"
     )
     daily_request_limit: int = Field(
-        default=50,
-        description="Max successful requests per user per UTC day"
+        default=50, description="Max successful requests per user per UTC day"
     )
     daily_token_limit: int = Field(
-        default=300000,
-        description="Max total tokens per user per UTC day"
+        default=300000, description="Max total tokens per user per UTC day"
     )
     monthly_request_limit: int = Field(
-        default=1000,
-        description="Max successful requests per user per UTC month"
+        default=1000, description="Max successful requests per user per UTC month"
     )
     monthly_token_limit: int = Field(
-        default=6000000,
-        description="Max total tokens per user per UTC month"
+        default=6000000, description="Max total tokens per user per UTC month"
     )
 
     # Session history retention
@@ -105,31 +135,30 @@ class Settings(BaseSettings):
         description=(
             "Keep only the last N user-turn boundaries in each user's "
             "SQLiteSession. Trimmed inline after every answer."
-        )
+        ),
     )
     session_ttl_days: int = Field(
         default=30,
         description=(
             "Delete a user's session DB file if untouched for this many "
             "days (privacy + disk)."
-        )
+        ),
     )
     retention_cleanup_interval_seconds: int = Field(
         default=86400,
         description=(
             "Interval for the background session/budget cleanup task. "
             "Runs once at startup, then every interval."
-        )
+        ),
     )
 
     # Logging
     log_level: str = Field(
-        default="INFO",
-        description="Logging level (DEBUG, INFO, WARNING, ERROR)"
+        default="INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR)"
     )
     log_format: str = Field(
         default="text",
-        description="Logging output format: 'text' for human-readable or 'json' for structured logs"
+        description="Logging output format: 'text' for human-readable or 'json' for structured logs",
     )
     perf_logging: bool = Field(
         default=False,
@@ -137,79 +166,69 @@ class Settings(BaseSettings):
             "Emit [Perf] per-turn / per-run timing logs for latency "
             "diagnostics. Keep False in production; set True for a "
             "diagnostic run only."
-        )
+        ),
     )
 
     # BoardGameGeek API
     bgg_api_token: str = Field(
-        default="",
-        description="BoardGameGeek API token (optional)"
+        default="", description="BoardGameGeek API token (optional)"
     )
 
     # Few-shot examples (optional prompt feature)
     enable_few_shot_examples: bool = Field(
         default=False,
-        description="If True, inject few-shot examples into the system prompt"
+        description="If True, inject few-shot examples into the system prompt",
     )
 
     # Langfuse Observability
     langfuse_public_key: str = Field(
-        default="",
-        description="Langfuse public API key (optional)"
+        default="", description="Langfuse public API key (optional)"
     )
     langfuse_secret_key: str = Field(
-        default="",
-        description="Langfuse secret API key (optional)"
+        default="", description="Langfuse secret API key (optional)"
     )
     langfuse_base_url: str = Field(
-        default="https://cloud.langfuse.com",
-        description="Langfuse API base URL"
+        default="https://cloud.langfuse.com", description="Langfuse API base URL"
     )
     enable_tracing: bool = Field(
-        default=False,
-        description="Enable OpenTelemetry tracing to Langfuse"
+        default=False, description="Enable OpenTelemetry tracing to Langfuse"
     )
     langfuse_environment: str = Field(
-        default="production",
-        description="Environment name for Langfuse traces"
+        default="production", description="Environment name for Langfuse traces"
     )
 
     # Sentry Error Tracking
     sentry_dsn: str = Field(
-        default="",
-        description="Sentry DSN (leave empty to disable)"
+        default="", description="Sentry DSN (leave empty to disable)"
     )
     sentry_environment: str = Field(
-        default="production",
-        description="Environment tag for Sentry events"
+        default="production", description="Environment tag for Sentry events"
     )
     sentry_release: str = Field(
         default="",
-        description="Release identifier for Sentry (e.g. git SHA). Empty = auto-detect"
+        description="Release identifier for Sentry (e.g. git SHA). Empty = auto-detect",
     )
     sentry_traces_sample_rate: float = Field(
         default=0.0,
         description=(
             "Sentry APM traces sample rate (0.0-1.0). Keep 0.0 when using "
             "OpenTelemetry/Langfuse to avoid double-tracing."
-        )
+        ),
     )
 
     # Health & Heartbeat
     health_host: str = Field(
-        default="0.0.0.0",
-        description="Bind host for the /health HTTP endpoint"
+        default="0.0.0.0", description="Bind host for the /health HTTP endpoint"
     )
     health_port: int = Field(
         default=8080,
-        description="Port for the /health HTTP endpoint. Set to 0 to disable."
+        description="Port for the /health HTTP endpoint. Set to 0 to disable.",
     )
     heartbeat_interval_seconds: int = Field(
         default=300,
         description=(
-            "Interval for the periodic 'bot alive' log line. "
-            "Set to 0 to disable."
-        )
+            "Interval for the periodic 'bot alive' log line. Set to 0 to disable."
+        ),
     )
 
     @property
@@ -228,7 +247,11 @@ class Settings(BaseSettings):
         if not self.admin_user_ids or not self.admin_user_ids.strip():
             return []
         try:
-            return [int(uid.strip()) for uid in self.admin_user_ids.split(",") if uid.strip()]
+            return [
+                int(uid.strip())
+                for uid in self.admin_user_ids.split(",")
+                if uid.strip()
+            ]
         except ValueError:
             return []
 
