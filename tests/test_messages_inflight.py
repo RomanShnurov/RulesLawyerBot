@@ -33,9 +33,10 @@ def _clear_locks():
     messages._user_run_locks.clear()
 
 
-def _common_patches(run_mock):
+def _common_patches(run_mock, sweep=None):
     """Patch everything _process_message touches before/around the run so
-    the test exercises only the in-flight gate."""
+    the test exercises only the in-flight gate. Pass `sweep` to substitute
+    the drop_trailing_unanswered_user_turn mock explicitly."""
     prog = MagicMock()
     prog.finalize = AsyncMock()
     prog.report_tool_call = AsyncMock()
@@ -56,7 +57,7 @@ def _common_patches(run_mock):
         patch.object(
             messages,
             "drop_trailing_unanswered_user_turn",
-            AsyncMock(return_value=False),
+            sweep if sweep is not None else AsyncMock(return_value=False),
         ),
         patch.object(messages, "ProgressReporter", lambda *_a, **_k: prog),
         patch.object(messages, "trim_session", AsyncMock()),
@@ -106,20 +107,21 @@ async def test_pre_run_orphan_sweep_is_called_before_agent():
     sweep = AsyncMock(return_value=True)
 
     async def _quick_run(*_a, **_k):
+        # The pre-run sweep MUST have already run by the time the agent
+        # is invoked; this assertion fails the test if ordering regresses.
+        assert sweep.await_count == 1
         r = MagicMock()
         r.new_items = []
         r.final_output = None
         return r
 
     run_mock = AsyncMock(side_effect=_quick_run)
-    patches = _common_patches(run_mock)
-    # Replace the orphan-sweep patch (index 4) with our spy.
-    patches[4] = patch.object(messages, "drop_trailing_unanswered_user_turn", sweep)
+    patches = _common_patches(run_mock, sweep=sweep)
     for p in patches:
         p.start()
     try:
         await messages.handle_message(_update(7), _context())
-        sweep.assert_awaited()  # pre-run sweep ran
+        sweep.assert_awaited_once()
         assert run_mock.await_count == 1
     finally:
         for p in patches:

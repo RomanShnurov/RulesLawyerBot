@@ -88,6 +88,8 @@ BLOCKLIST_RESPONSE = (
 # locked() check immediately followed by `async with lock` has no yield
 # point between them: a concurrent second update for the same user is
 # reliably dropped (no second agent run on the same SQLiteSession).
+# One Lock per distinct user_id, never evicted — acceptable for the
+# expected user cardinality (~thousands) over a single process lifetime.
 _user_run_locks: dict[int, asyncio.Lock] = {}
 
 BUSY_RESPONSE = "⏳ Я ещё обрабатываю ваш предыдущий вопрос — подождите немного."
