@@ -1,7 +1,7 @@
 """Tests for Runner max_turns, retry, and fallback behaviour."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -330,6 +330,75 @@ def test_inactivity_timeout_default_and_below_ceiling():
         settings.agent_stream_inactivity_timeout_seconds
         < settings.agent_run_timeout_seconds
     )
+
+
+@pytest.mark.asyncio
+async def test_inactivity_watchdog_aborts_frozen_stream(monkeypatch):
+    """A stream that emits nothing is aborted at the INACTIVITY budget,
+    well before the absolute ceiling, and TimeoutError is not retried."""
+    monkeypatch.setattr(
+        messages_module.settings, "agent_stream_inactivity_timeout_seconds", 0.05
+    )
+    monkeypatch.setattr(messages_module.settings, "agent_run_timeout_seconds", 60)
+    call_count = {"n": 0}
+
+    def _frozen(*_a, **_k):
+        call_count["n"] += 1
+        result = MagicMock()
+
+        async def _stream():
+            await asyncio.sleep(30)  # never emits an event
+            return
+            yield
+
+        result.stream_events = _stream
+        return result
+
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner") as MockRunner:
+        MockRunner.run_streamed.side_effect = _frozen
+        with pytest.raises(TimeoutError):
+            await _run_agent_with_retry(
+                agent=MagicMock(), agent_input="q", session=MagicMock()
+            )
+    assert call_count["n"] == 1  # not retried
+    assert loop.time() - t0 < 5  # bounded by inactivity, not 60s
+
+
+@pytest.mark.asyncio
+async def test_watchdog_abandons_uncancellable_drain(monkeypatch):
+    """If the drain ignores cancellation past the grace, we still return
+    promptly (abandon the zombie) instead of hanging."""
+    monkeypatch.setattr(
+        messages_module.settings, "agent_stream_inactivity_timeout_seconds", 0.05
+    )
+    monkeypatch.setattr(messages_module.settings, "agent_run_timeout_seconds", 60)
+    monkeypatch.setattr(messages_module, "_ABANDON_GRACE_SECONDS", 0.05)
+
+    def _shielded(*_a, **_k):
+        result = MagicMock()
+
+        async def _stream():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await asyncio.shield(asyncio.sleep(30))  # ignores cancel
+            return
+            yield
+
+        result.stream_events = _stream
+        return result
+
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    with patch("src.rules_lawyer_bot.handlers.messages.Runner") as MockRunner:
+        MockRunner.run_streamed.side_effect = _shielded
+        with pytest.raises(TimeoutError):
+            await _run_agent_with_retry(
+                agent=MagicMock(), agent_input="q", session=MagicMock()
+            )
+    assert loop.time() - t0 < 5  # did not block on the uncancellable drain
 
 
 def _make_validation_error() -> ValidationError:

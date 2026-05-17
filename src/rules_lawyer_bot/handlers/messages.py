@@ -5,6 +5,7 @@ and streaming progress updates.
 """
 
 import asyncio
+import contextlib
 import json
 import re
 import time
@@ -130,6 +131,92 @@ AGENT_TIMEOUT_RESPONSE = (
 
 _RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=4)
 
+# Grace given to a cancelled drain task to unwind after
+# result.cancel("immediate") before we ABANDON it. The SDK's
+# stream_events() finally awaits the detached _run_impl_task with no
+# timeout (result.py:339-342), so we must never block on the drain task
+# indefinitely — abandoning is the only escape. See
+# docs/superpowers/specs/2026-05-17-inactivity-watchdog-design.md.
+_ABANDON_GRACE_SECONDS = 5.0
+
+
+def _swallow_task_result(task: "asyncio.Task") -> None:
+    """Done-callback: retrieve an abandoned task's outcome so asyncio does
+    not log 'Task exception was never retrieved' for a zombie drain."""
+    if task.cancelled():
+        return
+    with contextlib.suppress(Exception):
+        task.exception()
+
+
+async def _drain_with_watchdog(result: RunResultStreaming) -> None:
+    """Drain result.stream_events() under an inactivity + absolute-ceiling
+    watchdog, cancelling and ABANDONING the run on stall.
+
+    Why a separate task + external cancel: Runner.run_streamed spawns the
+    real work as a detached background task. stream_events() swallows a
+    CancelledError delivered to the consumer (result.py:322) then, in its
+    finally, awaits that frozen detached task with no timeout
+    (result.py:339-342). So an asyncio.wait_for around the drain can never
+    fire. The only working mechanism is to run the drain in its own task
+    and, from OUTSIDE it, call result.cancel("immediate") (synchronous
+    producer kill, result.py:283-290) then abandon the drain task.
+    """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    last_event = started
+
+    async def _drain() -> None:
+        nonlocal last_event
+        async for _event in result.stream_events():
+            last_event = loop.time()
+
+    drain_task = asyncio.create_task(_drain())
+    drain_task.add_done_callback(_swallow_task_result)
+    inactivity = float(settings.agent_stream_inactivity_timeout_seconds)
+    ceiling = float(settings.agent_run_timeout_seconds)
+    try:
+        while True:
+            now = loop.time()
+            remaining = min(
+                inactivity - (now - last_event),
+                ceiling - (now - started),
+            )
+            if remaining > 0:
+                await asyncio.wait({drain_task}, timeout=remaining)
+            if drain_task.done():
+                drain_task.result()  # re-raise retriable / SDK error if any
+                return
+            now = loop.time()
+            stalled = (now - last_event) >= inactivity
+            over_ceiling = (now - started) >= ceiling
+            if not (stalled or over_ceiling):
+                continue
+            logger.warning(
+                "Agent run aborted (%s): inactive %.1fs, total %.1fs; "
+                "cancelling + abandoning",
+                "inactivity" if stalled else "absolute ceiling",
+                now - last_event,
+                now - started,
+            )
+            try:
+                result.cancel("immediate")  # sync, non-blocking
+            except Exception:
+                logger.exception("result.cancel() failed")
+            drain_task.cancel()
+            await asyncio.wait({drain_task}, timeout=_ABANDON_GRACE_SECONDS)
+            if not drain_task.done():
+                logger.warning(
+                    "Drain task did not stop within %.0fs grace; "
+                    "abandoning zombie (httpx read-timeout will reap it)",
+                    _ABANDON_GRACE_SECONDS,
+                )
+            raise TimeoutError("agent stream inactive or absolute ceiling exceeded")
+    finally:
+        if not drain_task.done():
+            drain_task.cancel()
+
+
 # Per-run perf state. A ContextVar is isolated per asyncio task, so with
 # concurrent_updates=True one user's turn counter never bleeds into
 # another's. Holds {turn, attempts, start, last} where start/last are
@@ -223,58 +310,46 @@ _RUN_CONFIG = RunConfig(
 async def _run_agent_with_retry(agent, agent_input: str, session) -> RunResultStreaming:
     """Run the agent with bounded retries on transient/structured failures.
 
-    Retries on ValidationError (LLM returned malformed JSON) and OpenAI
-    network errors. Business errors propagate immediately.
-    MaxTurnsExceeded is not retried — it propagates to the caller.
+    Retries on ValidationError / ModelBehaviorError / OpenAI network
+    errors. MaxTurnsExceeded and TimeoutError are NOT retried (re-running
+    a stalled model just multiplies the wait).
 
-    The whole run (all retries included) is bounded by a hard wall-clock
-    deadline. A stalled model/proxy stream raises none of the retriable
-    errors, so without this the coroutine hangs forever; on timeout
-    asyncio.wait_for cancels the stuck run and raises TimeoutError, which
-    is NOT retried (re-running a stalled model just multiplies the wait).
+    The drain runs under _drain_with_watchdog, which bounds it by an
+    inactivity budget AND an absolute wall-clock ceiling and aborts via
+    cancel + abandon. The old outer asyncio.wait_for is removed: the
+    Agents SDK neutralizes it (see the design spec).
     """
-    # Initialise per-run perf state unconditionally (cheap) so the model
-    # input filter and the summary log can read it. perf_logging only
-    # gates the actual log emission, not the bookkeeping.
+    # Seed per-run perf state BEFORE any task is created: the shared dict
+    # is mutated in place by the perf model-input filter from inside the
+    # SDK's detached task context; rebinding via .set() would not
+    # propagate. perf_logging only gates emission, not bookkeeping.
     now = time.perf_counter()
     _perf_state.set({"turn": 0, "attempts": 0, "start": now, "last": now})
 
-    async def _attempts() -> RunResultStreaming:
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(3),
-            wait=_RETRY_WAIT,
-            retry=retry_if_exception_type(_RETRIABLE_ERRORS),
-            reraise=True,
-        ):
-            with attempt:
-                state = _perf_state.get()
-                if state is not None:
-                    state["attempts"] += 1
-                result = Runner.run_streamed(
-                    starting_agent=agent,
-                    input=agent_input,
-                    session=session,
-                    max_turns=8,
-                    run_config=_RUN_CONFIG,
-                )
-                # Drain the stream so any ValidationError surfaces here,
-                # inside the retry attempt, rather than later in the caller.
-                # This means live tool-call progress is no longer reported
-                # during the run — events are replayed from
-                # `result.new_items` after completion. This is a deliberate
-                # tradeoff to enable retry on structured-output
-                # ValidationError.
-                async for _event in result.stream_events():
-                    pass
-                return result
-        # Unreachable: AsyncRetrying(reraise=True) either yields an attempt
-        # that returns, or re-raises the last exception. Satisfies the
-        # non-Optional return type.
-        raise AssertionError("retry loop exited without a result")
-
-    return await asyncio.wait_for(
-        _attempts(), timeout=settings.agent_run_timeout_seconds
-    )
+    async for attempt in AsyncRetrying(
+        stop=stop_after_attempt(3),
+        wait=_RETRY_WAIT,
+        retry=retry_if_exception_type(_RETRIABLE_ERRORS),
+        reraise=True,
+    ):
+        with attempt:
+            state = _perf_state.get()
+            if state is not None:
+                state["attempts"] += 1
+            result = Runner.run_streamed(
+                starting_agent=agent,
+                input=agent_input,
+                session=session,
+                max_turns=8,
+                run_config=_RUN_CONFIG,
+            )
+            # Drain inside its own task under the watchdog. A stored
+            # ValidationError/ModelBehaviorError surfaces here (re-raised
+            # by drain_task.result()) so AsyncRetrying still retries it.
+            await _drain_with_watchdog(result)
+            return result
+    # Unreachable: AsyncRetrying(reraise=True) either returns or re-raises.
+    raise AssertionError("retry loop exited without a result")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
