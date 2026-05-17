@@ -205,3 +205,54 @@ async def test_drop_trailing_clarification_noop_when_last_is_user():
     dropped = await drop_trailing_clarification(s)
     assert dropped is False
     assert s.clear_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_drop_orphan_user_turn_when_unanswered():
+    from src.rules_lawyer_bot.utils.retention import (
+        drop_trailing_unanswered_user_turn,
+    )
+
+    # q1 answered (a1); q2 is a killed run: only the user turn persisted.
+    s = FakeSession([_u("q1"), _a("a1"), _u("q2")])
+    dropped = await drop_trailing_unanswered_user_turn(s)
+    assert dropped is True
+    assert await s.get_items() == [_u("q1"), _a("a1")]
+    assert s.clear_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_drop_orphan_user_turn_with_dangling_tool_calls():
+    from src.rules_lawyer_bot.utils.retention import (
+        drop_trailing_unanswered_user_turn,
+    )
+
+    # Killed run got as far as a tool call but never produced an answer.
+    s = FakeSession([_u("q1"), _a("a1"), _u("q2"), _fco("partial tool out")])
+    dropped = await drop_trailing_unanswered_user_turn(s)
+    assert dropped is True
+    assert await s.get_items() == [_u("q1"), _a("a1")]
+
+
+@pytest.mark.asyncio
+async def test_drop_orphan_noop_when_last_turn_answered():
+    from src.rules_lawyer_bot.utils.retention import (
+        drop_trailing_unanswered_user_turn,
+    )
+
+    s = FakeSession([_u("q1"), _fco("tool"), _a("a1")])
+    dropped = await drop_trailing_unanswered_user_turn(s)
+    assert dropped is False
+    assert s.clear_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_drop_orphan_noop_on_empty_session():
+    from src.rules_lawyer_bot.utils.retention import (
+        drop_trailing_unanswered_user_turn,
+    )
+
+    s = FakeSession([])
+    dropped = await drop_trailing_unanswered_user_turn(s)
+    assert dropped is False
+    assert s.clear_calls == 0

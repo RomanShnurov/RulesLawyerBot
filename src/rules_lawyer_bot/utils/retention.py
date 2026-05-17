@@ -100,6 +100,57 @@ async def drop_trailing_clarification(session: Any) -> bool:
     return True
 
 
+def _is_assistant_message(item: Any) -> bool:
+    """An assistant answer item (the SDK persists the final structured
+    output as an assistant message). Used to decide whether the last user
+    turn was actually answered."""
+    if not isinstance(item, dict):
+        return False
+    if item.get("role") == "assistant":
+        return True
+    if item.get("type") == "message" and item.get("role") in (None, "assistant"):
+        return True
+    return False
+
+
+async def drop_trailing_unanswered_user_turn(session: Any) -> bool:
+    """Remove a killed/aborted run's orphaned trailing user turn.
+
+    Runner.run_streamed persists the user input immediately
+    (_save_result_to_session, run.py:1059) and the assistant answer only
+    at the end. A run killed in between leaves a user turn (optionally
+    followed by dangling tool calls) with no assistant answer after it.
+    That stale turn confuses the next run, so drop everything from the
+    start of the last user turn onward. A normally-completed turn always
+    ends with an assistant message, so this is a no-op at rest.
+
+    Returns True if anything was dropped.
+    """
+    items = await session.get_items()
+    if not items:
+        return False
+    last_user = None
+    for i in range(len(items) - 1, -1, -1):
+        if _is_user(items[i]):
+            last_user = i
+            break
+    if last_user is None:
+        return False
+    if any(_is_assistant_message(it) for it in items[last_user + 1 :]):
+        return False
+    cut = last_user
+    while cut > 0 and _is_user(items[cut - 1]):
+        cut -= 1
+    kept = items[:cut]
+    await session.clear_session()
+    await session.add_items(kept)
+    logger.info(
+        "Dropped %d orphaned item(s) from a killed/un-answered run",
+        len(items) - cut,
+    )
+    return True
+
+
 async def trim_session(session: Any, max_turns: int) -> None:
     """Bound stored history: keep the last `max_turns` user-turn boundaries
     AND elide oversized historical tool payloads. Rewrites the session only
