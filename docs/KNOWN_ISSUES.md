@@ -4,6 +4,41 @@
 
 **Status:** deferred (root-caused, not fixed). Logged 2026-05-17.
 
+### Update 2026-05-17 — it is extreme tail latency, NOT a permanent hang
+
+A later run confirmed the request **does eventually complete correctly** —
+it is catastrophic intermittent latency, not a lost answer:
+
+```
+13:39:53  [Resolver] resolved -> Alchemists (score=100); context injected
+13:56:18  [Perf] run summary: total=974.01s turns≈5 tool_calls=3 tokens=33627
+13:56:18  action_type: final_answer  ->  Final answer sent (confidence: 92%)
+```
+
+Per-turn deltas in that run:
+
+```
+normal turns:  +0.03s +4.12s +3.63s +1.95s +4.44s   (model ~2-4s)
+pathological:  +604.25s  +603.54s  +262.19s  +99.72s  (proxy stream frozen)
+```
+
+So ~974s (~16 min) wall-clock was almost entirely four multi-minute
+freezes between model turns; the answer arrived and was correct. The
+`asyncio.wait_for(120s)` still did not abort during the freezes
+(confirming root cause #1: the cancel is not propagating through the SDK
+stream await).
+
+Amplifier observed: the user re-sent the same message after ~10s of no
+reply, spawning a **second concurrent agent run on the same SQLiteSession**
+(no per-user in-flight lock). It also inherited a stale user turn
+("Сколько очков за птицу в Крылья?") left in the session by a *previous*
+killed run (a hung run never reaches `trim_session`, so its un-answered
+user message persists and confuses the next run). Two secondary gaps worth
+fixing alongside #2:
+- a per-user in-flight lock (drop/queue a second message while one is
+  running) to prevent concurrent runs on one session;
+- cleanup of a killed/aborted run's trailing un-answered user turn.
+
 ### Symptom
 
 A user question entered the agent and produced **no answer for ~18 minutes**.
