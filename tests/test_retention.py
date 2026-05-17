@@ -256,3 +256,18 @@ async def test_drop_orphan_noop_on_empty_session():
     dropped = await drop_trailing_unanswered_user_turn(s)
     assert dropped is False
     assert s.clear_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_drop_orphan_single_unanswered_turn_clears_session():
+    from src.rules_lawyer_bot.utils.retention import (
+        drop_trailing_unanswered_user_turn,
+    )
+
+    # First-ever message's run was killed before any answer: only the
+    # user turn exists. Sweeping it correctly empties the session.
+    s = FakeSession([_u("first ever question")])
+    dropped = await drop_trailing_unanswered_user_turn(s)
+    assert dropped is True
+    assert await s.get_items() == []
+    assert s.clear_calls == 1

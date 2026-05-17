@@ -126,3 +126,29 @@ async def test_pre_run_orphan_sweep_is_called_before_agent():
     finally:
         for p in patches:
             p.stop()
+
+
+@pytest.mark.asyncio
+async def test_reactive_orphan_sweep_on_timeout():
+    """When the agent run times out, the except-TimeoutError branch
+    sweeps the just-orphaned user turn (reactive path) and the user gets
+    the timeout response."""
+    sweep = AsyncMock(return_value=True)
+
+    async def _timeout_run(*_a, **_k):
+        raise TimeoutError("agent stream inactive or absolute ceiling exceeded")
+
+    run_mock = AsyncMock(side_effect=_timeout_run)
+    upd = _update(99)
+    patches = _common_patches(run_mock, sweep=sweep)
+    for p in patches:
+        p.start()
+    try:
+        await messages.handle_message(upd, _context())
+        sweep.assert_awaited()  # reactive cleanup ran
+        upd.message.reply_text.assert_awaited_once()
+        assert upd.message.reply_text.call_args[0][0] == messages.AGENT_TIMEOUT_RESPONSE
+        assert run_mock.await_count == 1  # TimeoutError is not retried here
+    finally:
+        for p in patches:
+            p.stop()
