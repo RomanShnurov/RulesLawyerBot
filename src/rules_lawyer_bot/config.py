@@ -56,11 +56,23 @@ class Settings(BaseSettings):
     agent_run_timeout_seconds: int = Field(
         default=120,
         description=(
-            "Hard wall-clock cap on a single agent run (all internal "
-            "retries included). A stalled model/proxy stream raises no "
-            "retriable error, so without this deadline the request hangs "
-            "and — with sequential update dispatch — freezes the bot. On "
-            "timeout the user gets a message and the handler returns."
+            "Absolute wall-clock ceiling on a single agent run (all "
+            "internal retries included), enforced by the drain watchdog "
+            "in handlers/messages.py (NOT via asyncio.wait_for, which the "
+            "Agents SDK neutralizes — see docs/superpowers/specs/"
+            "2026-05-17-inactivity-watchdog-design.md). On breach the run "
+            "is cancelled and abandoned and the user gets a message."
+        ),
+    )
+    agent_stream_inactivity_timeout_seconds: int = Field(
+        default=45,
+        description=(
+            "Max seconds allowed between two consecutive Agents SDK "
+            "stream events before the run is declared stalled. Detects "
+            "the real failure mode (a frozen proxy stream that delivers "
+            "no semantic progress) far sooner than the absolute ceiling. "
+            "Must be < agent_run_timeout_seconds. Also used as the httpx "
+            "read-timeout backstop on the AsyncOpenAI client."
         ),
     )
     max_context_tokens: int = Field(

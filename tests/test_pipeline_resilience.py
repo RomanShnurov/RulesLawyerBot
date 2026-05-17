@@ -1,4 +1,5 @@
 """Tests for Runner max_turns, retry, and fallback behaviour."""
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -97,7 +98,9 @@ async def test_no_retry_on_file_not_found():
 async def test_retry_exhausted_raises_final_error():
     """After 3 ValidationError attempts, the last error propagates."""
     with patch("src.rules_lawyer_bot.handlers.messages.Runner") as MockRunner:
-        MockRunner.run_streamed.side_effect = lambda *a, **k: (_ for _ in ()).throw(_make_validation_error())
+        MockRunner.run_streamed.side_effect = lambda *a, **k: (_ for _ in ()).throw(
+            _make_validation_error()
+        )
 
         with pytest.raises(ValidationError):
             await _run_agent_with_retry(
@@ -273,11 +276,10 @@ async def test_agent_run_times_out_and_is_not_retried():
         result.final_output = None
         return result
 
-    with patch.object(
-        messages_module.settings, "agent_run_timeout_seconds", 0.05
-    ), patch(
-        "src.rules_lawyer_bot.handlers.messages.Runner"
-    ) as MockRunner:
+    with (
+        patch.object(messages_module.settings, "agent_run_timeout_seconds", 0.05),
+        patch("src.rules_lawyer_bot.handlers.messages.Runner") as MockRunner,
+    ):
         MockRunner.run_streamed.side_effect = _hanging_result
 
         with pytest.raises(TimeoutError):
@@ -316,6 +318,18 @@ async def test_run_agent_initialises_perf_state():
     assert state["attempts"] == 1
     assert "start" in state and "last" in state
     assert state["turn"] == 0  # Runner mocked -> filter never invoked
+
+
+def test_inactivity_timeout_default_and_below_ceiling():
+    """The per-stream-event inactivity budget exists, defaults to 45s,
+    and is strictly below the absolute wall-clock ceiling."""
+    from src.rules_lawyer_bot.config import settings
+
+    assert settings.agent_stream_inactivity_timeout_seconds == 45
+    assert (
+        settings.agent_stream_inactivity_timeout_seconds
+        < settings.agent_run_timeout_seconds
+    )
 
 
 def _make_validation_error() -> ValidationError:
