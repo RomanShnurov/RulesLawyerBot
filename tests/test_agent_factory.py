@@ -1,7 +1,6 @@
 """Tests for the lazy agent factory."""
-from unittest.mock import patch
 
-import pytest
+from unittest.mock import patch
 
 
 def test_get_rules_agent_returns_agent():
@@ -54,3 +53,21 @@ def test_create_agent_not_called_at_import():
         importlib.reload(defn)
         # Even after reload, create_agent should NOT have been called.
         mock_create.assert_not_called()
+
+
+def test_openai_client_uses_low_httpx_read_timeout():
+    """The AsyncOpenAI client is built with an httpx.Timeout whose read
+    timeout equals the inactivity budget (zombie-producer backstop), not
+    the old 120s scalar."""
+    import httpx
+
+    from src.rules_lawyer_bot.agent.definition import create_agent
+    from src.rules_lawyer_bot.config import settings
+
+    with patch("src.rules_lawyer_bot.agent.definition.AsyncOpenAI") as MockClient:
+        create_agent()
+
+    timeout = MockClient.call_args.kwargs["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.read == float(settings.agent_stream_inactivity_timeout_seconds)
+    assert timeout.connect == 10.0

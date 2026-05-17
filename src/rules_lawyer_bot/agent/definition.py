@@ -5,6 +5,7 @@ structured outputs. The agent uses PipelineOutput to route responses
 based on conversation state (clarification, game selection, or final answer).
 """
 
+import httpx
 from functools import lru_cache
 from pathlib import Path
 
@@ -36,15 +37,21 @@ def create_agent(with_examples: bool = False) -> Agent:
     Returns:
         Configured Agent instance
     """
-    # Initialize OpenAI client with custom base URL.
-    # An explicit per-request timeout lets the SDK raise APITimeoutError
-    # (a retriable error) on a stalled HTTP read, instead of relying on
-    # the 600s SDK default. The hard wall-clock cap in
-    # _run_agent_with_retry is the outer guarantee.
+    # Low read-timeout = defense-in-depth backstop ONLY. The inactivity
+    # watchdog in handlers/messages.py is the primary stall detector
+    # (semantic: no SDK event). This bounds the lifetime of an abandoned
+    # zombie producer if result.cancel() did not stop it promptly. Note:
+    # proxyapi.ru keep-alive bytes can reset the httpx read-timeout
+    # (KNOWN_ISSUES #2), which is exactly why it is only a backstop.
     client = AsyncOpenAI(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
-        timeout=float(settings.agent_run_timeout_seconds),
+        timeout=httpx.Timeout(
+            read=float(settings.agent_stream_inactivity_timeout_seconds),
+            connect=10.0,
+            write=30.0,
+            pool=10.0,
+        ),
     )
 
     model = OpenAIChatCompletionsModel(
