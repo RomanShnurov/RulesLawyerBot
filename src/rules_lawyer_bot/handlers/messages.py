@@ -191,6 +191,8 @@ async def _drain_with_watchdog(result: RunResultStreaming) -> None:
             stalled = (now - last_event) >= inactivity
             over_ceiling = (now - started) >= ceiling
             if not (stalled or over_ceiling):
+                # event(s) arrived during the wait; neither budget expired
+                # — loop back and wait again
                 continue
             logger.warning(
                 "Agent run aborted (%s): inactive %.1fs, total %.1fs; "
@@ -527,11 +529,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await progress.finalize()
                 await message.reply_text(MAX_TURNS_RESPONSE)
                 return MAX_TURNS_RESPONSE
-            except TimeoutError:
-                logger.warning(
-                    f"Agent run timed out for user {user.id} after "
-                    f"{settings.agent_run_timeout_seconds}s"
-                )
+            except TimeoutError as e:
+                logger.warning("Agent run timed out for user %s: %s", user.id, e)
                 await progress.finalize()
                 await message.reply_text(AGENT_TIMEOUT_RESPONSE)
                 return AGENT_TIMEOUT_RESPONSE
