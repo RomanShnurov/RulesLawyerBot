@@ -4,6 +4,7 @@ This module implements a multi-stage conversational pipeline with
 structured outputs. The agent uses PipelineOutput to route responses
 based on conversation state (clarification, game selection, or final answer).
 """
+
 from functools import lru_cache
 from pathlib import Path
 
@@ -47,8 +48,7 @@ def create_agent(with_examples: bool = False) -> Agent:
     )
 
     model = OpenAIChatCompletionsModel(
-        model=settings.openai_model,
-        openai_client=client
+        model=settings.openai_model, openai_client=client
     )
 
     # Agent instructions with Multi-Stage Schema-Guided Reasoning (SGR)
@@ -100,10 +100,11 @@ search strategy. If `truncated`, the result is partial — drill deeper if neede
 3. If find_game_by_name returns "not found", call `search_filenames(query)`
    as fallback.
 4. If multiple matches: action_type=`game_selection`, fill candidates.
-5. If no matches: call `list_directory_tree()` and use action_type=
-   `clarification_needed` with the library list in `clarification.options`.
-   ALWAYS populate `options` with at least 3 game names — never return empty
-   options when the library has games.
+5. If no matches: the game is NOT in the library. Use action_type=
+   `clarification_needed`, state plainly that this game is not available,
+   and populate `clarification.options` ONLY with genuinely close filename
+   matches from tool results. NEVER invent or pad with arbitrary library
+   games — empty `options` is correct when nothing is close.
 
 ## DISCOVERY QUERIES
 
@@ -173,6 +174,7 @@ returned only text, add a note: "📋 В правилах может быть с
 
     if with_examples:
         from src.rules_lawyer_bot.agent.prompts.examples import render_examples
+
         instructions = instructions + "\n\n" + render_examples()
 
     agent = Agent(
@@ -215,20 +217,17 @@ def get_user_session(user_id: int) -> SQLiteSession:
 
     logger.debug(f"[Perf] Creating session for user {user_id}: {db_path}")
 
-    session = SQLiteSession(
-        session_id=session_id,
-        db_path=str(db_path)
-    )
+    session = SQLiteSession(session_id=session_id, db_path=str(db_path))
 
     logger.debug(f"[Perf] Session object created for user {user_id}")
     return session
-
 
 
 @lru_cache(maxsize=1)
 def get_rules_agent() -> Agent:
     """Return the cached agent instance, creating it on first call."""
     from src.rules_lawyer_bot.config import settings
+
     return create_agent(with_examples=settings.enable_few_shot_examples)
 
 
