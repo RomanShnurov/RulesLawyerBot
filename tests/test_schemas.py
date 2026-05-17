@@ -164,6 +164,7 @@ def test_final_answer_valid_with_game_identification():
         final_answer=FinalAnswer(answer="text", confidence=0.9),
         stage_reasoning="found it",
     )
+    assert output.final_answer is not None
     assert output.final_answer.answer == "text"
 
 

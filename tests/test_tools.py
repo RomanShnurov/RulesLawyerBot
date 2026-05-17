@@ -12,6 +12,8 @@ Removed in cleanup pass:
   Covered by tests/test_pdf_cache.py::test_search_returns_page_numbers.
 """
 import asyncio
+from typing import Any, cast
+
 import pytest
 from pathlib import Path
 
@@ -267,7 +269,7 @@ async def test_find_game_exact_english(games_index_fixture):
     from src.rules_lawyer_bot.agent.tools import find_game_by_name
 
     raw = await find_game_by_name.on_invoke_tool(
-        None, _json.dumps({"query": "Dead Cells"})
+        cast(Any, None), _json.dumps({"query": "Dead Cells"})
     )
     result = _json.loads(raw)
     assert result["found"] is True
@@ -283,7 +285,7 @@ async def test_find_game_typo(games_index_fixture):
     from src.rules_lawyer_bot.agent.tools import find_game_by_name
 
     raw = await find_game_by_name.on_invoke_tool(
-        None, _json.dumps({"query": "Dead Cels"})  # missing one 'l'
+        cast(Any, None), _json.dumps({"query": "Dead Cels"})  # missing one 'l'
     )
     result = _json.loads(raw)
     assert result["found"] is True
@@ -296,7 +298,7 @@ async def test_find_game_russian(games_index_fixture):
     from src.rules_lawyer_bot.agent.tools import find_game_by_name
 
     raw = await find_game_by_name.on_invoke_tool(
-        None, _json.dumps({"query": "Мёртвые клетки"})
+        cast(Any, None), _json.dumps({"query": "Мёртвые клетки"})
     )
     result = _json.loads(raw)
     assert result["found"] is True
@@ -311,7 +313,7 @@ async def test_find_game_no_false_positive(games_index_fixture):
     from src.rules_lawyer_bot.agent.tools import find_game_by_name
 
     raw = await find_game_by_name.on_invoke_tool(
-        None, _json.dumps({"query": "Monopoly"})
+        cast(Any, None), _json.dumps({"query": "Monopoly"})
     )
     result = _json.loads(raw)
     assert result["found"] is False
@@ -324,7 +326,7 @@ async def test_find_game_results_sorted_by_confidence(games_index_fixture):
     from src.rules_lawyer_bot.agent.tools import find_game_by_name
 
     raw = await find_game_by_name.on_invoke_tool(
-        None, _json.dumps({"query": "haven"})  # might match Gloomhaven only
+        cast(Any, None), _json.dumps({"query": "haven"})  # might match Gloomhaven only
     )
     result = _json.loads(raw)
     if result["found"] and "games" in result:

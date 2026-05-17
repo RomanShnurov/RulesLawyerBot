@@ -42,6 +42,8 @@ def test_create_agent_with_examples_flag():
     agent_plain = create_agent()
     agent_with = create_agent(with_examples=True)
 
+    assert isinstance(agent_plain.instructions, str)
+    assert isinstance(agent_with.instructions, str)
     assert len(agent_with.instructions) > len(agent_plain.instructions)
     assert "## EXAMPLES" in agent_with.instructions
 
@@ -51,4 +53,5 @@ def test_create_agent_default_no_examples():
     from src.rules_lawyer_bot.agent.definition import create_agent
 
     agent = create_agent()
+    assert isinstance(agent.instructions, str)
     assert "## EXAMPLES" not in agent.instructions

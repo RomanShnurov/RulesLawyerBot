@@ -156,19 +156,79 @@ DEAD_CELLS_MIXED = """1 3
 # instead of looping every keyword to MaxTurns.
 BROKEN_WITH_ISLANDS = (GARBLED * 4) + " CONCIERGE PLAYERS FLIP THIS CARD"
 
-# Faithful reproduction of the real Dead Cells .pdf.txt cache signature
-# (the production incident): glyph-soup-dominated extraction with a thin
-# remnant of recoverable prose. Real cache: 1580 tokens, ratio 0.375,
-# mean 2.80. This fixture: 128 tokens, ratio 0.33, mean 2.80 — same
-# profile, built from inline constants only (rules_pdfs/ is gitignored).
-# The old _unique_real_words signal returned 306 on the real file and let
-# it through; mean token length is scale-invariant and catches it.
+# Faithful reproduction of poppler's broken Dead Cells .pdf.txt signature:
+# glyph-soup-dominated extraction with a thin prose remnant. poppler's
+# extraction of the real file measured 1580 tokens, ratio 0.375, mean
+# 2.80; this fixture is 128 tokens, ratio 0.33, mean 2.80 — the same
+# low-ratio/low-mean profile, built from inline constants only
+# (rules_pdfs/ is gitignored). The legacy xpdf-4.00 build extracts the
+# SAME PDF into a different shape — HIGH ratio, low mean — covered
+# separately by DEAD_CELLS_REAL_XPDF. The old _unique_real_words signal
+# returned 306 on the real file and let it through; mean token length is
+# scale-invariant and catches both extractor profiles.
 REAL_BROKEN_CACHE_SIGNATURE = (GARBLED * 4) + " " + GOOD_RU
 
 # Mixed rulebook: decorative-font heading gibberish + a genuinely readable
 # body. The body keeps longword_ratio >= 0.55 (measured 0.69), so it must
 # stay READABLE — the false positive the dual-signal structure prevents.
 MIXED_READABLE_BODY = (GARBLED * 2) + (" " + GOOD_RU + " " + GOOD_EN) * 4
+
+
+# Verbatim slice of the REAL Dead Cells .pdf.txt produced by xpdf-4.00
+# `pdftotext -layout` (the extractor on a stock Windows toolchain; runs of
+# layout whitespace collapsed — split() makes that metrically identical to
+# the raw bytes). The body fonts have no ToUnicode CMap, so nothing but
+# card-ID labels (B1-01, ST-04), roman numerals (III) and one card title
+# survive. Measured: 62 tokens, longword_ratio 0.806, mean token length
+# 3.84 — and the whole real cache is the same shape (197 tokens, ratio
+# 0.675, mean 3.65). This is the profile NO existing fixture covered: the
+# ratio is HIGH (short IDs are >=3 chars) yet the text is unanswerable
+# glyph-label noise. The `ratio >= 0.55` early-return classified it
+# READABLE, so every keyword hit no_match and the agent looped to
+# MaxTurnsExceeded — the exact production incident on a Windows host.
+DEAD_CELLS_REAL_XPDF = """B1-01
+.
+B1-06 B1-07
+2 THE IMMOLATE1D
+III III III B1-10
+ST-04 B1-09
+1 ST-18 ST-08
+B1-1
+B1-12 B1-13
+3 DC-B1 4
+III III
+2 ST-18 III
+ST-08
+III III
+ST-04
+ST-04 6
+5
+6a
+5 7a
+16 6 ? 7
+III
+ST-13
+1 III ST-04 III 2 3 III
+III ST-18 III
+ST-04 ST-08
+2a 1a THE IMMOLATED
+3a 6a
+4a 6
+4 5
+III III
+2 3
+III
+III III
+1 -, ? B1-02
+ST-18 ST-08
+III ST-04
+ST-04
+3a
+1a
+5a
+4 5 6
+5a
+5b"""
 
 
 def test_whole_broken_document_is_unreadable():
@@ -200,6 +260,16 @@ def test_real_broken_cache_signature_is_unreadable():
     flagged so the agent escalates in one turn instead of looping to
     MaxTurnsExceeded."""
     assert document_is_unreadable(REAL_BROKEN_CACHE_SIGNATURE) is True
+
+
+def test_real_xpdf_extraction_is_unreadable():
+    """Regression for the Windows production incident: the real Dead Cells
+    cache extracted by xpdf-4.00 has a HIGH longword_ratio (0.675; short
+    card IDs are >=3 chars) but a LOW mean token length (3.65) — pure
+    glyph-label noise that answers no rules question. The `ratio >= 0.55`
+    early-return wrongly classified it readable, so the agent looped every
+    keyword to MaxTurnsExceeded. It must be flagged unreadable."""
+    assert document_is_unreadable(DEAD_CELLS_REAL_XPDF) is True
 
 
 def test_mixed_rulebook_with_real_prose_body_stays_readable():

@@ -3,7 +3,7 @@ import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import Callable, TypeVar
+from typing import Callable, TypeVar, cast
 
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.utils.logger import logger
@@ -121,7 +121,7 @@ ugrep_semaphore = _SemaphoreManager()
 class BotError(Exception):
     """User-facing error with separate logging details."""
 
-    def __init__(self, user_message: str, log_details: str = None):
+    def __init__(self, user_message: str, log_details: str | None = None):
         """Initialize error.
 
         Args:
@@ -185,4 +185,4 @@ def safe_execution(func: F) -> F:
                 "Please try again or contact support if the issue persists."
             )
 
-    return wrapper
+    return cast(F, wrapper)

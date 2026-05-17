@@ -2,6 +2,7 @@
 import os
 import time
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -218,7 +219,7 @@ async def test_read_full_document_garbled_reports_no_match(mock_settings):
     os.utime(cache_path, (future, future))
 
     result_raw = await read_full_document.on_invoke_tool(
-        None, _j.dumps({"filename": "broken.pdf"})
+        cast(Any, None), _j.dumps({"filename": "broken.pdf"})
     )
     inner_start = result_raw.find(">\n") + 2
     inner_end = result_raw.rfind("\n</tool_output>")

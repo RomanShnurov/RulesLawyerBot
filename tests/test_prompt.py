@@ -9,6 +9,7 @@ from src.rules_lawyer_bot.agent.definition import create_agent
 def _get_instructions() -> str:
     """Extract the current agent instructions string."""
     agent = create_agent()
+    assert isinstance(agent.instructions, str)
     return agent.instructions
 
 

@@ -25,15 +25,23 @@ async def handle_game_selection(
         context: Telegram context
     """
     query = update.callback_query
+    if query is None or query.from_user is None:
+        return
     await query.answer()  # Acknowledge callback to remove loading state
 
     user_id = query.from_user.id
     bind_request_context(
         user_id,
         query.from_user.username,
-        query.message.chat_id if query.message else None,
+        query.message.chat.id if query.message else None,
     )
     conv_state = get_conversation_state(context, user_id)
+
+    if query.data is None:
+        logger.error("Callback query has no data")
+        await query.edit_message_text("❌ Invalid selection. Please try again.")
+        conv_state.reset_pending()
+        return
 
     # Parse callback data: "game_select:0"
     try:

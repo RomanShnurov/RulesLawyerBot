@@ -53,5 +53,5 @@ def test_drop_backend_exporter_clears_sdk_processors():
 
     observability._drop_agents_sdk_backend_exporter()
 
-    mp = get_trace_provider()._multi_processor
+    mp = getattr(get_trace_provider(), "_multi_processor")
     assert list(getattr(mp, "_processors", [])) == []

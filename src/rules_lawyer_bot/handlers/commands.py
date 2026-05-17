@@ -22,6 +22,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context: Telegram context
     """
     user = update.effective_user
+    if user is None or update.message is None or update.effective_chat is None:
+        return
     bind_request_context(user.id, user.username, update.effective_chat.id)
     logger.info(f"User {user.id} ({user.username}) started bot")
 
@@ -67,7 +69,11 @@ async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context: Telegram context
     """
     user = update.effective_user
-    bind_request_context(user.id, user.username, update.effective_chat.id)
+    if user is None or update.message is None or update.effective_chat is None:
+        return
+    message = update.message
+    chat = update.effective_chat
+    bind_request_context(user.id, user.username, chat.id)
     logger.info(f"User {user.id} ({user.username}) requested game list via /games")
 
     # Extract search query from command args
@@ -76,14 +82,14 @@ async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         pdf_dir = Path(settings.pdf_storage_path)
         if not pdf_dir.exists():
-            await update.message.reply_text("⚠️ PDF library not found.")
+            await message.reply_text("⚠️ PDF library not found.")
             return
 
         # Get all PDF filenames (without .pdf extension)
         all_games = sorted([f.stem for f in pdf_dir.glob("*.pdf")])
 
         if not all_games:
-            await update.message.reply_text("📚 The game library is currently empty.")
+            await message.reply_text("📚 The game library is currently empty.")
             return
 
         # If query provided: search with fuzzy matching
@@ -115,7 +121,7 @@ async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 response += f"\n🎮 Всего игр в библиотеке: {len(all_games)}"
                 response += "\n\n💬 Используйте /games для просмотра всех игр"
 
-                await update.message.reply_text(response)
+                await message.reply_text(response)
                 return
 
             # Found matches - show them
@@ -129,7 +135,7 @@ async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 if len(matches) > 10:
                     response += f"\n... и еще {len(matches) - 10} игр"
 
-            await update.message.reply_text(response, parse_mode="Markdown")
+            await message.reply_text(response, parse_mode="Markdown")
             return
 
         # No query: show all games
@@ -143,8 +149,8 @@ async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         response += "🔍 *Поиск игры:*\n"
         response += "Используйте /games <название> для поиска конкретной игры"
 
-        await send_long_message(context.bot, update.effective_chat.id, response)
+        await send_long_message(context.bot, chat.id, response)
 
     except Exception as e:
         logger.exception(f"Error in games_command: {e}")
-        await update.message.reply_text("⚠️ Ошибка при получении списка игр.")
+        await message.reply_text("⚠️ Ошибка при получении списка игр.")

@@ -71,6 +71,12 @@ async def handle_pipeline_output(
         context: Telegram context
         user_id: Telegram user ID
     """
+    if update.message is None or update.effective_chat is None:
+        logger.warning("[Pipeline] update has no message/chat, dropping output")
+        return
+    message = update.message
+    chat = update.effective_chat
+
     conv_state = get_conversation_state(context, user_id)
 
     logger.info(
@@ -79,18 +85,23 @@ async def handle_pipeline_output(
     logger.debug(f"[Pipeline] stage_reasoning: {output.stage_reasoning}")
 
     if output.action_type == ActionType.CLARIFICATION_NEEDED:
-        # Ask clarification question as text
+        # Ask clarification question as text. The model_validator guarantees
+        # `clarification` is populated for this action_type.
+        assert output.clarification is not None
         conv_state.stage = ConversationStage.AWAITING_CLARIFICATION
         conv_state.pending_question = output.clarification.question
 
         logger.info(f"[Pipeline] Asking clarification: {output.clarification.question}")
 
-        await update.message.reply_text(
+        await message.reply_text(
             f"❓ {output.clarification.question}"
         )
 
     elif output.action_type == ActionType.GAME_SELECTION:
-        # Show inline keyboard for game selection
+        # Show inline keyboard for game selection. The model_validator
+        # guarantees both fields are populated for this action_type.
+        assert output.game_identification is not None
+        assert output.clarification is not None
         conv_state.stage = ConversationStage.AWAITING_GAME_SELECTION
         conv_state.game_candidates = [
             {"english_name": c.english_name, "pdf_filename": c.pdf_filename}
@@ -103,13 +114,15 @@ async def handle_pipeline_output(
             f"[Pipeline] Showing game selection: {len(conv_state.game_candidates)} options"
         )
 
-        await update.message.reply_text(
+        await message.reply_text(
             f"🎮 {output.clarification.question}",
             reply_markup=keyboard,
         )
 
     elif output.action_type == ActionType.SEARCH_IN_PROGRESS:
-        # Need more info during search
+        # Need more info during search. The model_validator guarantees
+        # `search_progress` is populated for this action_type.
+        assert output.search_progress is not None
         conv_state.stage = ConversationStage.AWAITING_CLARIFICATION
         conv_state.pending_question = output.search_progress.additional_question
 
@@ -123,7 +136,7 @@ async def handle_pipeline_output(
             f"[Pipeline] Search in progress, asking: {output.search_progress.additional_question}"
         )
 
-        await update.message.reply_text(
+        await message.reply_text(
             f"🔍 Ищу в правилах {output.search_progress.game_name}...\n\n"
             f"❓ {output.search_progress.additional_question}"
         )
@@ -132,16 +145,16 @@ async def handle_pipeline_output(
         # Complete answer - update game context and send response
         conv_state.reset_pending()
 
-        if output.game_identification:
-            conv_state.set_game(
-                output.game_identification.identified_game,
-                output.game_identification.pdf_file,
-            )
+        gi = output.game_identification
+        if gi and gi.identified_game and gi.pdf_file:
+            conv_state.set_game(gi.identified_game, gi.pdf_file)
             logger.debug(
-                f"[Pipeline] Set game context: {output.game_identification.identified_game}"
+                f"[Pipeline] Set game context: {gi.identified_game}"
             )
 
-        # Format final answer for display
+        # Format final answer for display. The model_validator guarantees
+        # `final_answer` is populated for this action_type.
+        assert output.final_answer is not None
         parts = [output.final_answer.answer]
 
         # Add confidence indicator if low confidence
@@ -175,6 +188,6 @@ async def handle_pipeline_output(
 
         await send_long_message(
             bot=context.bot,
-            chat_id=update.effective_chat.id,
+            chat_id=chat.id,
             text=response_text,
         )

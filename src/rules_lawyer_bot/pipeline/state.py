@@ -23,6 +23,9 @@ def get_conversation_state(
     Returns:
         ConversationState for this user
     """
+    # user_data is None only outside a per-user context (e.g. inline queries).
+    # All bot handlers that reach here run inside one, so this is an invariant.
+    assert context.user_data is not None, "conversation state requires per-user context"
     if "conv_state" not in context.user_data:
         context.user_data["conv_state"] = ConversationState()
         logger.debug(f"Created new conversation state for user {user_id}")

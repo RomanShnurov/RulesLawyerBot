@@ -17,6 +17,7 @@ dependencies = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "mypy>=1.19.1",
+    "pyrefly>=1.0",
     "logfire>=3.0.0",
     "tenacity>=8.0.0",
     "rapidfuzz>=3.0.0",
@@ -27,3 +28,10 @@ dependencies = [
 
 [tool.uv]
 package = true
+
+[tool.pyrefly]
+# Code imports modules as `src.rules_lawyer_bot...`, so the repo root
+# (not `src/`) must be on the import search path.
+project-includes = ["src", "tests"]
+search-path = ["."]
+python-version = "3.13"

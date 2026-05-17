@@ -25,26 +25,31 @@ _EXCERPT_MIN_LONGWORD_RATIO = 0.35
 
 # Document level: the whole pdftotext cache.
 #
-# A low longword_ratio alone is NOT sufficient: "mixed" rulebooks extract
-# their body prose correctly but render headings and card titles with
-# decorative fonts that have no ToUnicode CMap, emitting single-glyph
-# gibberish. That gibberish can drag the whole-document ratio under 0.55
-# even though the rules text stays searchable — flagging it would be a
-# false positive that hides a usable rulebook.
+# Mean token length is the scale-invariant, extractor-independent
+# signature of glyph-soup extraction: every word is shattered into 1–3
+# char fragments. Unlike a unique-vocabulary count it does not grow with
+# document size, and unlike longword_ratio it does not depend on which
+# pdftotext built the cache. Measured on the real broken Dead Cells
+# rulebook: mean 2.8 (poppler) / 3.65 (xpdf-4.00); genuine Russian or
+# English prose averages >= 7. The 4.0 threshold sits well inside that
+# gap. The token floor keeps a tiny but valid leaflet from being flagged.
 #
-# So the document is condemned only when BOTH signals agree: the
-# longword_ratio is low AND the tokens are, on average, too short to be
-# words. Mean token length is the scale-invariant signature of glyph-soup
-# extraction (every word shattered into 1–2 char fragments) and, unlike a
-# unique-vocabulary count, does not grow with document size — a large
-# broken cache still averages ~2–3 chars/token, while genuine Russian or
-# English prose averages >= 7. The token floor avoids flagging a tiny but
-# valid leaflet.
-#
-# Measured mean token length: real broken Dead Cells cache -> 2.80,
-# genuine prose -> 7.2–8.0. The 4.0 threshold sits well inside that gap.
+# longword_ratio is deliberately NOT used here. It was once a veto
+# (ratio >= 0.55 => readable) meant to spare "mixed" rulebooks whose body
+# prose extracts correctly while decorative headings emit gibberish. But
+# the ratio is an artefact of the extractor: xpdf-4.00 renders the same
+# broken Dead Cells PDF as short alphanumeric card IDs ("B1-01", "ST-04")
+# that are all >= 3 chars, lifting the ratio to 0.68–0.81 and silently
+# passing the veto, while poppler yields 0.33 on the identical file. The
+# veto therefore hid a wholly unreadable cache on a stock Windows
+# toolchain — every keyword hit no_match and the agent looped to
+# MaxTurnsExceeded (the production incident). Mean token length stays low
+# (2.8–3.65) under both extractors, while a genuinely mixed-but-readable
+# rulebook keeps a high mean from its real body words (measured 4.55), so
+# the single signal is both sufficient and false-positive-safe — see
+# test_mixed_rulebook_with_real_prose_body_stays_readable and
+# test_real_xpdf_extraction_is_unreadable.
 _DOC_MIN_TOKENS = 50
-_DOC_MIN_LONGWORD_RATIO = 0.55
 _DOC_MIN_MEAN_TOKEN_LEN = 4.0
 
 
@@ -92,17 +97,15 @@ def document_is_unreadable(text: str) -> bool:
     Judged over the entire extraction, where scattered readable islands
     (English card text inside an otherwise broken Russian rulebook)
     average out — the failure mode that defeats per-excerpt detection.
-    Conservative: too little text to judge -> readable.
+    Condemned on mean token length alone (the extractor-independent
+    glyph-soup signature); see the _DOC_* rationale above for why
+    longword_ratio is not used. Conservative: too little text to judge
+    -> readable.
     """
     if not text or not text.strip():
         return True
 
-    n, ratio = _longword_ratio(text)
+    n, _ = _longword_ratio(text)
     if n < _DOC_MIN_TOKENS:
         return False
-    if ratio >= _DOC_MIN_LONGWORD_RATIO:
-        return False
-    # Low ratio: only condemn if the tokens are also, on average, too
-    # short to be words. A mixed-but-usable rulebook keeps a high mean
-    # (its real body words) even when decorative gibberish sinks the ratio.
     return _mean_token_len(text) < _DOC_MIN_MEAN_TOKEN_LEN

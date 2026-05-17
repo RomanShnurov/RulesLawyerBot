@@ -4,9 +4,9 @@ import asyncio
 import json
 import re as _re
 import subprocess
-from functools import wraps
+from functools import lru_cache, wraps
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, TypeVar, cast
 
 from agents import function_tool
 from rapidfuzz import fuzz
@@ -47,7 +47,7 @@ def async_tool(func: F) -> F:
     async def wrapper(*args, **kwargs):
         return await asyncio.to_thread(func, *args, **kwargs)
 
-    return wrapper
+    return cast(F, wrapper)
 
 
 def _safe_pdf_path(filename: str) -> Path:
@@ -56,6 +56,50 @@ def _safe_pdf_path(filename: str) -> Path:
     Delegates to the default repository's get_pdf_path.
     """
     return _repo().get_pdf_path(filename)
+
+
+@lru_cache(maxsize=8)
+def _verify_poppler_pdftotext(binary: str) -> bool:
+    """Probe the configured pdftotext once and warn loudly if not poppler.
+
+    poppler and the legacy xpdf-4.00 build extract the SAME PDF into
+    materially different text: a font-without-ToUnicode rulebook becomes
+    ratio-0.33 glyph-soup under poppler but ratio-0.68 short card-ID noise
+    under xpdf. The whole pipeline — text cache, ugrep search, and the
+    document_is_unreadable guard — is calibrated for poppler, so a
+    non-poppler binary silently degrades every answer (and defeats the
+    unreadable-document escalation). Probed once per binary (lru_cache);
+    never raises — extraction must still proceed best-effort.
+
+    Returns True only when the binary self-identifies as poppler.
+    """
+    try:
+        proc = subprocess.run(
+            [binary, "-v"], capture_output=True, text=True, timeout=10
+        )
+        banner = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning(
+            f"Could not probe pdftotext ('{binary}') to confirm it is "
+            f"poppler ({e}); PDF text extraction may be unreliable."
+        )
+        return False
+
+    first_line = banner.splitlines()[0] if banner else ""
+    if "poppler" in banner.lower():
+        logger.debug(f"pdftotext is poppler: {first_line}")
+        return True
+
+    logger.warning(
+        "Configured pdftotext (%r) is NOT poppler (%r). The text cache, "
+        "ugrep search and the readability guard are calibrated for "
+        "poppler; the legacy xpdf build extracts the same PDF differently "
+        "and will silently degrade answers. Install poppler-utils and set "
+        "PDFTOTEXT_PATH to its binary.",
+        binary,
+        first_line,
+    )
+    return False
 
 
 def _get_pdf_text_cache(pdf_path: Path) -> Path:
@@ -87,6 +131,9 @@ def _get_pdf_text_cache(pdf_path: Path) -> Path:
 
     if needs_regen:
         logger.debug(f"Generating PDF text cache: {cache_path}")
+        # Confirm the active extractor is poppler (warns once if not) —
+        # the whole pipeline is calibrated against poppler's output.
+        _verify_poppler_pdftotext(settings.pdftotext_path)
         # Write to a temp file then rename atomically to avoid torn reads
         # under concurrent access.
         import tempfile
@@ -101,7 +148,12 @@ def _get_pdf_text_cache(pdf_path: Path) -> Path:
             tmp_path = Path(tmp.name)
         try:
             subprocess.run(
-                ["pdftotext", "-layout", str(pdf_path), str(tmp_path)],
+                [
+                    settings.pdftotext_path,
+                    "-layout",
+                    str(pdf_path),
+                    str(tmp_path),
+                ],
                 check=True,
                 capture_output=True,
                 timeout=60,
@@ -241,7 +293,7 @@ def find_game_by_name(query: str) -> str:
         query_stripped = query.strip()
         threshold = 65
 
-        scored: list[tuple[dict, int]] = []
+        scored: list[tuple[dict, float]] = []
         for game in all_games:
             names = [game["english_name"]] + game.get("russian_names", [])
             best = max(
@@ -260,7 +312,7 @@ def find_game_by_name(query: str) -> str:
                 "suggestion": "Try search_filenames() or list_directory_tree()"
             }, ensure_ascii=False)
 
-        def _with_confidence(game: dict, score: int) -> dict:
+        def _with_confidence(game: dict, score: float) -> dict:
             return {**game, "confidence": round(score / 100, 2)}
 
         if len(scored) == 1:
@@ -352,12 +404,15 @@ async def _search_inside_file_ugrep_impl(
         logger.debug("Searching with ugrep command: " + " ".join(cmd))
 
         async with ugrep_semaphore:
-            result = await asyncio.to_thread(
-                subprocess.run,
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
+            result = cast(
+                "subprocess.CompletedProcess[str]",
+                await asyncio.to_thread(
+                    subprocess.run,
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                ),
             )
 
         if result.returncode == 0:
@@ -453,7 +508,7 @@ async def parallel_search_terms(filename: str, terms: list[str], fuzzy: bool = F
 
         per_term: dict[str, dict] = {}
         for term, raw in zip(terms, raw_results):
-            if isinstance(raw, Exception):
+            if isinstance(raw, BaseException):
                 per_term[term] = {
                     "status": "error",
                     "data": [],

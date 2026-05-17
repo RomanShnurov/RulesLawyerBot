@@ -129,8 +129,8 @@ def setup_logging() -> logging.Logger:
     logger.addHandler(console_handler)
 
     # File handler
+    log_file = Path(settings.data_path) / "app.log"
     try:
-        log_file = Path(settings.data_path) / "app.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
         file_handler = logging.FileHandler(log_file, encoding="utf-8")

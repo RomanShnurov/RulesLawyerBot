@@ -5,11 +5,13 @@ is disabled by default because the project uses OpenTelemetry → Langfuse for
 distributed tracing — enabling Sentry traces would produce duplicate spans.
 """
 
+import logging
 from typing import Optional
 
 import sentry_sdk
 from sentry_sdk.integrations.asyncio import AsyncioIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.types import Event, Hint
 
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.utils.logger import logger
@@ -28,7 +30,7 @@ def setup_sentry() -> bool:
     try:
         logging_integration = LoggingIntegration(
             level=None,         # disable breadcrumb capture (Logfire/OTel covers this)
-            event_level="ERROR",  # send ERROR+ logs as Sentry events
+            event_level=logging.ERROR,  # send ERROR+ logs as Sentry events
         )
 
         sentry_sdk.init(
@@ -56,7 +58,7 @@ def setup_sentry() -> bool:
         return False
 
 
-def _add_default_tags(event: dict, hint: dict) -> Optional[dict]:
+def _add_default_tags(event: Event, hint: Hint) -> Optional[Event]:
     """Attach project-wide tags to every Sentry event."""
     event.setdefault("tags", {})
     event["tags"].setdefault("service", "RulesLawyerBot")

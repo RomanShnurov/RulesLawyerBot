@@ -1,6 +1,7 @@
 """Tests for path traversal protection in agent tools."""
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -85,7 +86,7 @@ async def test_read_full_document_rejects_traversal(mock_settings):
     from src.rules_lawyer_bot.agent.tools import read_full_document
 
     result = await read_full_document.on_invoke_tool(
-        None, json.dumps({"filename": "../../etc/passwd"})
+        cast(Any, None), json.dumps({"filename": "../../etc/passwd"})
     )
 
     # @safe_execution converts ValueError (from _safe_pdf_path) to the generic
