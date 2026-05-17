@@ -11,8 +11,7 @@ import time
 from contextvars import ContextVar
 from typing import Optional
 
-import sentry_sdk
-from agents import Runner
+from agents import Runner, RunResultStreaming
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
 from agents.run import RunConfig
 from openai import APIConnectionError, APITimeoutError
@@ -26,12 +25,20 @@ from tenacity import (
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from src.rules_lawyer_bot.agent import game_resolver
 from src.rules_lawyer_bot.agent.definition import get_rules_agent, get_user_session
 from src.rules_lawyer_bot.agent.schemas import PipelineOutput
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.utils.budget import budget_tracker
-from src.rules_lawyer_bot.utils.retention import trim_session
-from src.rules_lawyer_bot.pipeline.handler import handle_pipeline_output
+from src.rules_lawyer_bot.utils.conversation_state import ConversationStage
+from src.rules_lawyer_bot.utils.retention import (
+    drop_trailing_clarification,
+    trim_session,
+)
+from src.rules_lawyer_bot.pipeline.handler import (
+    build_game_selection_keyboard,
+    handle_pipeline_output,
+)
 from src.rules_lawyer_bot.pipeline.state import get_conversation_state
 from src.rules_lawyer_bot.utils.context_window import (
     build_context_trimming_filter,
@@ -67,8 +74,7 @@ BLOCKLIST_PATTERNS: list[str] = [
 
 # Compile patterns for performance
 _BLOCKLIST_REGEX = re.compile(
-    "|".join(f"({p})" for p in BLOCKLIST_PATTERNS),
-    re.IGNORECASE
+    "|".join(f"({p})" for p in BLOCKLIST_PATTERNS), re.IGNORECASE
 )
 
 BLOCKLIST_RESPONSE = (
@@ -109,8 +115,7 @@ _RETRIABLE_ERRORS = (
 
 
 RETRY_EXHAUSTED_RESPONSE = (
-    "⚠️ Не удалось обработать запрос. "
-    "Попробуйте переформулировать вопрос."
+    "⚠️ Не удалось обработать запрос. Попробуйте переформулировать вопрос."
 )
 
 MAX_TURNS_RESPONSE = (
@@ -129,15 +134,11 @@ _RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=4)
 # concurrent_updates=True one user's turn counter never bleeds into
 # another's. Holds {turn, attempts, start, last} where start/last are
 # time.perf_counter() readings. None outside an instrumented run.
-_perf_state: ContextVar[Optional[dict]] = ContextVar(
-    "agent_perf_state", default=None
-)
+_perf_state: ContextVar[Optional[dict]] = ContextVar("agent_perf_state", default=None)
 
 
 # The real trimming filter (pure, unit-tested in test_context_window.py).
-_trim_filter = build_context_trimming_filter(
-    max_tokens=settings.max_context_tokens
-)
+_trim_filter = build_context_trimming_filter(max_tokens=settings.max_context_tokens)
 
 
 def _summarize_tail(items, max_items: int = 4, max_chars: int = 600) -> str:
@@ -180,6 +181,7 @@ def _perf_model_input_filter(call_data):
             state["turn"] += 1
             delta = now - state["last"]
             state["last"] = now
+            items: list = []
             try:
                 items = call_data.model_data.input
                 est = estimate_tokens(items)
@@ -187,8 +189,7 @@ def _perf_model_input_filter(call_data):
             except Exception:
                 est, n_items = -1, -1
             logger.info(
-                "[Perf] model turn %d: prev turn +%.2fs, "
-                "input≈%d est_tokens, %d items",
+                "[Perf] model turn %d: prev turn +%.2fs, input≈%d est_tokens, %d items",
                 state["turn"],
                 delta,
                 est,
@@ -219,7 +220,7 @@ _RUN_CONFIG = RunConfig(
 )
 
 
-async def _run_agent_with_retry(agent, agent_input: str, session):
+async def _run_agent_with_retry(agent, agent_input: str, session) -> RunResultStreaming:
     """Run the agent with bounded retries on transient/structured failures.
 
     Retries on ValidationError (LLM returned malformed JSON) and OpenAI
@@ -238,7 +239,7 @@ async def _run_agent_with_retry(agent, agent_input: str, session):
     now = time.perf_counter()
     _perf_state.set({"turn": 0, "attempts": 0, "start": now, "last": now})
 
-    async def _attempts():
+    async def _attempts() -> RunResultStreaming:
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(3),
             wait=_RETRY_WAIT,
@@ -266,6 +267,10 @@ async def _run_agent_with_retry(agent, agent_input: str, session):
                 async for _event in result.stream_events():
                     pass
                 return result
+        # Unreachable: AsyncRetrying(reraise=True) either yields an attempt
+        # that returns, or re-raises the last exception. Satisfies the
+        # non-Optional return type.
+        raise AssertionError("retry loop exited without a result")
 
     return await asyncio.wait_for(
         _attempts(), timeout=settings.agent_run_timeout_seconds
@@ -286,13 +291,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         update: Telegram update object
         context: Telegram context
     """
+    if (
+        update.effective_user is None
+        or update.message is None
+        or update.effective_chat is None
+        or update.message.text is None
+    ):
+        return
     user = update.effective_user
+    message = update.message
+    chat = update.effective_chat
     message_text = update.message.text
 
     # Bind request context BEFORE the first log call so user_id/chat_id
     # are attached to every record from this task. ContextVars + Sentry
     # SDK 2.x asyncio scope isolation keep concurrent requests separated.
-    bind_request_context(user.id, user.username, update.effective_chat.id)
+    bind_request_context(user.id, user.username, chat.id)
 
     logger.info(f"User {user.id}: {message_text[:100]}")
 
@@ -302,6 +316,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if settings.tracing_enabled:
         try:
             from opentelemetry import trace as otel_trace
+
             tracer = otel_trace.get_tracer(__name__)
         except Exception as e:
             logger.debug(f"Failed to initialize tracer: {e}")
@@ -309,7 +324,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Check rate limit (outside trace to avoid unnecessary spans)
     allowed, rate_limit_msg = await rate_limiter.check_rate_limit(user.id)
     if not allowed:
-        await update.message.reply_text(f"⏳ {rate_limit_msg}")
+        await message.reply_text(f"⏳ {rate_limit_msg}")
         return
 
     # Per-user budget (admins exempt entirely; check fails open internally)
@@ -322,13 +337,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if decision.retry_at
                 else ""
             )
-            await update.message.reply_text(f"🚫 {decision.reason}{retry}")
+            await message.reply_text(f"🚫 {decision.reason}{retry}")
             return
 
     # Check blocklist patterns (outside trace to avoid unnecessary spans)
     if _check_blocklist(message_text):
-        logger.warning(f"Blocklist triggered for user {user.id}: {message_text[:50]}...")
-        await update.message.reply_text(BLOCKLIST_RESPONSE)
+        logger.warning(
+            f"Blocklist triggered for user {user.id}: {message_text[:50]}..."
+        )
+        await message.reply_text(BLOCKLIST_RESPONSE)
         return
 
     # Helper to run the main processing logic
@@ -337,33 +354,106 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Get conversation state
         conv_state = get_conversation_state(context, user.id)
 
+        # P2: is this message an ANSWER to a clarification we asked?
+        answering_clarification = (
+            conv_state.stage == ConversationStage.AWAITING_CLARIFICATION
+        )
+        pending_q = conv_state.pending_question
+        if answering_clarification:
+            conv_state.reset_pending()
+
+        # P1: deterministic pre-agent resolver. Skip it when a game is
+        # already sticky (a follow-up question is not a game name) UNLESS
+        # this is a clarification answer (expected to be a title).
+        run_resolver = (not conv_state.has_game_context()) or answering_clarification
+        decision = (
+            game_resolver.resolve(message_text, is_answer=answering_clarification)
+            if run_resolver
+            else game_resolver.ResolverResult(kind="ambiguous")
+        )
+
+        if decision.kind == "absent":
+            logger.info(
+                "[Resolver] absent (top=%.0f) for %r",
+                decision.score,
+                message_text[:60],
+            )
+            conv_state.reset_pending()
+            tail = (
+                "\n\nБлижайшее, что у меня есть: " + ", ".join(decision.suggestions)
+                if decision.suggestions
+                else ""
+            )
+            await message.reply_text(
+                "🤷 У меня нет правил этой игры в библиотеке." + tail
+            )
+            return "resolver: absent"
+
+        if decision.kind == "multiple":
+            logger.info(
+                "[Resolver] multiple (%d candidates) for %r",
+                len(decision.candidates),
+                message_text[:60],
+            )
+            conv_state.stage = ConversationStage.AWAITING_GAME_SELECTION
+            conv_state.game_candidates = [
+                {
+                    "english_name": c["english_name"],
+                    "pdf_filename": c["pdf_filename"],
+                }
+                for c in decision.candidates
+            ]
+            keyboard = build_game_selection_keyboard(conv_state.game_candidates)
+            await message.reply_text(
+                "🎮 Какую именно игру вы имеете в виду?",
+                reply_markup=keyboard,
+            )
+            return "resolver: multiple"
+
+        if decision.kind == "resolved":
+            assert decision.game is not None and decision.pdf is not None
+            conv_state.set_game(decision.game, decision.pdf)
+            logger.info(
+                "[Resolver] resolved %r -> %s (score=%.0f)",
+                message_text[:60],
+                decision.game,
+                decision.score,
+            )
+
         # Build context-aware input for agent
         agent_input = message_text
-
-        # Inject game context if available
         if conv_state.has_game_context():
             agent_input = (
                 f"[Context: Current game is '{conv_state.current_game}', "
                 f"PDF: '{conv_state.current_pdf}']\n\n"
                 f"User question: {message_text}"
             )
-            logger.debug(
-                f"[Pipeline] Injected game context: {conv_state.current_game}"
+            logger.debug(f"[Pipeline] Injected game context: {conv_state.current_game}")
+        elif answering_clarification and pending_q:
+            agent_input = (
+                f'[The user was previously asked: "{pending_q}". Their '
+                f'answer: "{message_text}". Re-resolve the game from this '
+                f"answer and proceed; do NOT repeat the previous "
+                f"clarification.]\n\n{message_text}"
             )
+            logger.debug("[Pipeline] Reframed clarification answer")
 
         # Send typing indicator
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id, action="typing"
-        )
+        await context.bot.send_chat_action(chat_id=chat.id, action="typing")
 
         # Create progress reporter for streaming updates
-        progress = ProgressReporter(context.bot, update.effective_chat.id)
+        progress = ProgressReporter(context.bot, chat.id)
 
         session = None
         try:
             # Get user-specific session
             logger.debug(f"[Perf] Getting session for user {user.id}")
             session = get_user_session(user.id)
+            if answering_clarification:
+                try:
+                    await drop_trailing_clarification(session)
+                except Exception:
+                    logger.exception("drop_trailing_clarification failed")
             logger.debug("[Perf] Session loaded, starting agent run")
 
             # Run agent with streaming + bounded retries
@@ -375,11 +465,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     session=session,
                 )
             except MaxTurnsExceeded:
-                logger.warning(
-                    f"MaxTurnsExceeded for user {user.id}"
-                )
+                logger.warning(f"MaxTurnsExceeded for user {user.id}")
                 await progress.finalize()
-                await update.message.reply_text(MAX_TURNS_RESPONSE)
+                await message.reply_text(MAX_TURNS_RESPONSE)
                 return MAX_TURNS_RESPONSE
             except TimeoutError:
                 logger.warning(
@@ -387,7 +475,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     f"{settings.agent_run_timeout_seconds}s"
                 )
                 await progress.finalize()
-                await update.message.reply_text(AGENT_TIMEOUT_RESPONSE)
+                await message.reply_text(AGENT_TIMEOUT_RESPONSE)
                 return AGENT_TIMEOUT_RESPONSE
             except _RETRIABLE_ERRORS as e:
                 # With tenacity reraise=True, the last retriable error
@@ -396,14 +484,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     f"Retry exhausted for user {user.id}: {type(e).__name__}"
                 )
                 await progress.finalize()
-                await update.message.reply_text(RETRY_EXHAUSTED_RESPONSE)
+                await message.reply_text(RETRY_EXHAUSTED_RESPONSE)
                 return RETRY_EXHAUSTED_RESPONSE
 
             # Record budget usage for the completed run (admins exempt).
             if settings.budget_enabled and user.id not in settings.admin_ids:
-                usage = getattr(
-                    getattr(result, "context_wrapper", None), "usage", None
-                )
+                usage = getattr(getattr(result, "context_wrapper", None), "usage", None)
                 total_tokens = getattr(usage, "total_tokens", 0) or 0
                 await budget_tracker.record(user.id, total_tokens)
 
@@ -415,13 +501,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if settings.perf_logging:
                 pstate = _perf_state.get() or {}
                 run_seconds = (
-                    time.perf_counter() - pstate["start"]
-                    if "start" in pstate
-                    else -1.0
+                    time.perf_counter() - pstate["start"] if "start" in pstate else -1.0
                 )
                 tool_calls = sum(
-                    1 for it in result.new_items
-                    if it.type == "tool_call_item"
+                    1 for it in result.new_items if it.type == "tool_call_item"
                 )
                 psum_usage = getattr(
                     getattr(result, "context_wrapper", None), "usage", None
@@ -446,12 +529,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     if tool_name is None and hasattr(item, "raw_item"):
                         tool_name = getattr(item.raw_item, "name", "unknown")
                     args = None
-                    if hasattr(item, "raw_item") and hasattr(item.raw_item, "arguments"):
+                    if hasattr(item, "raw_item") and hasattr(
+                        item.raw_item, "arguments"
+                    ):
                         try:
                             args = json.loads(item.raw_item.arguments)
                         except (json.JSONDecodeError, TypeError):
                             pass
-                    await progress.report_tool_call(tool_name, args)
+                    await progress.report_tool_call(
+                        str(tool_name) if tool_name else "unknown", args
+                    )
 
             # Force final update before response
             await progress.force_update()
@@ -472,10 +559,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         # Pretty-print JSON if it's parseable
                         try:
                             parsed = json.loads(text_content)
-                            logger.debug(
-                                f"  Step {i}: {step.type}: "
-                                f"{step.raw_item.model_dump_json(indent=2, ensure_ascii=False)}"
+                            _dump = getattr(step.raw_item, "model_dump_json", None)
+                            raw_repr = (
+                                _dump(indent=2, ensure_ascii=False)
+                                if callable(_dump)
+                                else str(step.raw_item)
                             )
+                            logger.debug(f"  Step {i}: {step.type}: {raw_repr}")
                             logger.debug(
                                 f"    Output (formatted):\n"
                                 f"{json.dumps(parsed, indent=2, ensure_ascii=False)}"
@@ -517,7 +607,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # Delete progress message before sending response
                 await progress.finalize()
                 await send_long_message(
-                    bot=context.bot, chat_id=update.effective_chat.id, text=response_text
+                    bot=context.bot, chat_id=chat.id, text=response_text
                 )
                 # Return text output for trace
                 return response_text
@@ -532,7 +622,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "Please try again or contact support."
             )
 
-            await update.message.reply_text(error_message)
+            await message.reply_text(error_message)
             # Return error for trace
             return f"Error: {e}"
         finally:
@@ -551,13 +641,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         trace_attrs = get_trace_context_for_user(user.id, user.username)
         # Add session ID for Langfuse session grouping
-        trace_attrs["langfuse.session.id"] = str(update.effective_chat.id)
+        trace_attrs["langfuse.session.id"] = str(chat.id)
         # Set input at trace level (required for Langfuse)
         trace_attrs["input"] = message_text
 
         with tracer.start_as_current_span(
-            "telegram_message_handler",
-            attributes=trace_attrs
+            "telegram_message_handler", attributes=trace_attrs
         ) as root_span:
             # Run processing and get output
             output = await _process_message()

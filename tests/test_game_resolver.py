@@ -79,8 +79,16 @@ def test_multiple_close_variants(repo):
     assert "Gloomhaven" in names and "Gloomhaven: Jaws of the Lion" in names
 
 
-def test_absent_title_like(repo):
+def test_unknown_title_on_fresh_message_is_ambiguous(repo):
+    # A fresh unknown title must NOT be proactively declared absent (a low
+    # score on a fresh message can also be a generic rules question with no
+    # game named). It falls through to the agent.
     r = game_resolver.resolve("Героям здесь не место", repo=repo)
+    assert r.kind == "ambiguous"
+
+
+def test_absent_only_as_clarification_answer(repo):
+    r = game_resolver.resolve("Героям здесь не место", repo=repo, is_answer=True)
     assert r.kind == "absent"
     assert len(r.suggestions) <= 3
 

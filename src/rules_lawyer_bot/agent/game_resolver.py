@@ -28,8 +28,6 @@ from src.rules_lawyer_bot.agent.repository import (
 from src.rules_lawyer_bot.config import settings
 from src.rules_lawyer_bot.utils.logger import logger
 
-_TITLE_LIKE_MAX_WORDS = 6
-
 
 @dataclass(frozen=True)
 class _Entry:
@@ -124,8 +122,11 @@ def resolve(
 ) -> ResolverResult:
     """Resolve a user query to a library game without the LLM where possible.
 
-    `is_answer=True` marks a reply to a clarification: the text is expected
-    to be a title, so the absent verdict is allowed even if it is long.
+    `is_answer=True` marks a reply to a clarification: only then is the
+    text expected to BE a game title, so only then may the resolver
+    proactively declare the game absent. On a fresh message a low score
+    means "no game named here" (a generic rules question), NOT "this game
+    does not exist" — that falls through to the agent.
     """
     if not settings.resolver_enabled:
         return ResolverResult(kind="ambiguous")
@@ -189,12 +190,12 @@ def resolve(
                 break
         return ResolverResult(kind="multiple", candidates=cands, score=top)
 
-    # Band 3: nothing close -> absent, BUT only claim "no such game" for a
-    # title-like query (or an explicit clarification answer); a long
-    # free-form question that simply names no game must fall through to the
-    # agent, not be told the game does not exist.
-    title_like = is_answer or len(q.split()) <= _TITLE_LIKE_MAX_WORDS
-    if top < settings.resolver_absent_threshold and title_like:
+    # Band 3: nothing close -> absent, BUT only when the user is answering
+    # a clarification (the text is then expected to be a title). A low
+    # score on a FRESH message just means no game is named (a generic
+    # rules question) — that must fall through to the agent, never be
+    # answered "this game does not exist".
+    if is_answer and top < settings.resolver_absent_threshold:
         sugg: list[str] = []
         for e, _ in scored[:3]:
             if e.game not in sugg:
