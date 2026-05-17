@@ -104,13 +104,6 @@ class Settings(BaseSettings):
         default=75,
         description="Min score for a candidate to enter the multi-select band",
     )
-    resolver_absent_threshold: int = Field(
-        default=60,
-        description=(
-            "If the top score is below this, a title-like query is treated "
-            "as a game not in the library"
-        ),
-    )
 
     # Per-user budget
     budget_enabled: bool = Field(

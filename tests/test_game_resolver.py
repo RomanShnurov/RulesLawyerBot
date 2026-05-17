@@ -18,7 +18,6 @@ def repo(mock_settings, monkeypatch):
         "resolver_resolve_threshold": 90,
         "resolver_gap_min": 8,
         "resolver_multi_threshold": 75,
-        "resolver_absent_threshold": 60,
     }.items():
         monkeypatch.setattr(mock_settings, name, val, raising=False)
 
@@ -79,38 +78,20 @@ def test_multiple_close_variants(repo):
     assert "Gloomhaven" in names and "Gloomhaven: Jaws of the Lion" in names
 
 
-def test_unknown_title_on_fresh_message_is_ambiguous(repo):
-    # A fresh unknown title must NOT be proactively declared absent (a low
-    # score on a fresh message can also be a generic rules question with no
-    # game named). It falls through to the agent.
+def test_unknown_title_is_ambiguous_not_absent(repo):
+    # The resolver never declares a game absent: an unknown title falls
+    # through to the agent (which states "not in library" honestly).
     r = game_resolver.resolve("Героям здесь не место", repo=repo)
     assert r.kind == "ambiguous"
 
 
-def test_absent_only_as_clarification_answer(repo):
-    r = game_resolver.resolve("Героям здесь не место", repo=repo, is_answer=True)
-    assert r.kind == "absent"
-    assert len(r.suggestions) <= 3
-
-
-def test_absent_not_claimed_for_long_sentence(repo):
-    # A long non-title sentence with no game name must NOT be called absent
-    # (avoid false "no such game" on a normal follow-up question).
+def test_long_question_with_no_game_is_ambiguous(repo):
     r = game_resolver.resolve(
         "подскажи пожалуйста как именно нужно правильно подсчитывать "
         "финальные очки в конце партии",
         repo=repo,
     )
     assert r.kind == "ambiguous"
-
-
-def test_absent_forced_when_is_answer(repo):
-    r = game_resolver.resolve(
-        "это какая-то совсем другая неизвестная настолка",
-        repo=repo,
-        is_answer=True,
-    )
-    assert r.kind == "absent"
 
 
 def test_disabled_returns_ambiguous(repo, monkeypatch):

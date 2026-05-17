@@ -2,9 +2,12 @@
 
 Game identification over the <=241-PDF catalog is pure string matching, but
 the LLM was doing it across up to 4 sequential proxy round-trips (~2-4s
-each). This module resolves the common cases (clear hit / several close /
-genuinely absent) deterministically before the agent runs, so the model is
-reached only for the genuinely ambiguous residue.
+each). This module deterministically resolves the two safe cases — a clear
+unique hit and a small set of close variants — before the agent runs.
+Everything else (including an unknown game) falls through to the agent: the
+resolver never proactively declares a game absent, because a low fuzzy
+score on a free-form question is indistinguishable from a generic rules
+question that simply names no game.
 
 Corpus = every games_index.json entry (english_name + russian_names) UNIONED
 with every PDF filename stem (closes the 134-indexed / 241-on-disk gap). No
@@ -38,12 +41,11 @@ class _Entry:
 
 @dataclass
 class ResolverResult:
-    kind: Literal["resolved", "multiple", "absent", "ambiguous"]
+    kind: Literal["resolved", "multiple", "ambiguous"]
     game: Optional[str] = None
     pdf: Optional[str] = None
     score: float = 0.0
     candidates: list[dict] = field(default_factory=list)
-    suggestions: list[str] = field(default_factory=list)
 
 
 def _normalize(s: str) -> str:
@@ -117,16 +119,14 @@ def _get_corpus(repo: RulesRepository) -> list[_Entry]:
 def resolve(
     query: str,
     repo: RulesRepository | None = None,
-    *,
-    is_answer: bool = False,
 ) -> ResolverResult:
     """Resolve a user query to a library game without the LLM where possible.
 
-    `is_answer=True` marks a reply to a clarification: only then is the
-    text expected to BE a game title, so only then may the resolver
-    proactively declare the game absent. On a fresh message a low score
-    means "no game named here" (a generic rules question), NOT "this game
-    does not exist" — that falls through to the agent.
+    Returns ``resolved`` (confident unique hit) or ``multiple`` (a few close
+    variants) only; anything else is ``ambiguous`` and falls through to the
+    agent. The resolver never returns "absent": a low score cannot be told
+    apart from a generic rules question that names no game, so claiming
+    "this game does not exist" here risks false negatives.
     """
     if not settings.resolver_enabled:
         return ResolverResult(kind="ambiguous")
@@ -190,16 +190,8 @@ def resolve(
                 break
         return ResolverResult(kind="multiple", candidates=cands, score=top)
 
-    # Band 3: nothing close -> absent, BUT only when the user is answering
-    # a clarification (the text is then expected to be a title). A low
-    # score on a FRESH message just means no game is named (a generic
-    # rules question) — that must fall through to the agent, never be
-    # answered "this game does not exist".
-    if is_answer and top < settings.resolver_absent_threshold:
-        sugg: list[str] = []
-        for e, _ in scored[:3]:
-            if e.game not in sugg:
-                sugg.append(e.game)
-        return ResolverResult(kind="absent", suggestions=sugg, score=top)
-
+    # Nothing safely decidable -> hand off to the agent. We deliberately do
+    # NOT emit an "absent" verdict here (see the module/function docstring):
+    # a low score on a free-form question is indistinguishable from a
+    # generic rules question that simply names no game.
     return ResolverResult(kind="ambiguous", score=top)

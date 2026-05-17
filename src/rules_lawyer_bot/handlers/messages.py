@@ -367,27 +367,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # this is a clarification answer (expected to be a title).
         run_resolver = (not conv_state.has_game_context()) or answering_clarification
         decision = (
-            game_resolver.resolve(message_text, is_answer=answering_clarification)
+            game_resolver.resolve(message_text)
             if run_resolver
             else game_resolver.ResolverResult(kind="ambiguous")
         )
-
-        if decision.kind == "absent":
-            logger.info(
-                "[Resolver] absent (top=%.0f) for %r",
-                decision.score,
-                message_text[:60],
-            )
-            conv_state.reset_pending()
-            tail = (
-                "\n\nБлижайшее, что у меня есть: " + ", ".join(decision.suggestions)
-                if decision.suggestions
-                else ""
-            )
-            await message.reply_text(
-                "🤷 У меня нет правил этой игры в библиотеке." + tail
-            )
-            return "resolver: absent"
 
         if decision.kind == "multiple":
             logger.info(
